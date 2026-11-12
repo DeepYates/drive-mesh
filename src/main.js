@@ -1921,7 +1921,10 @@ function syncPeerMeshes( dt, now ) {
 
 function syncVoidFloor( dt ) {
 
-	const off = state === 'driving' ? car.wheels.filter( w => ! w.onMesh ).length : 0;
+	// The grid marks the invisible floor the car rolls on where there is no mesh. Over the
+	// imagery it is not wanted: the picture already shows what is under the wheels. It is
+	// kept only for `?sat=0`, where off-mesh ground would otherwise be featureless.
+	const off = state === 'driving' && ! basemap ? car.wheels.filter( w => ! w.onMesh ).length : 0;
 	const mat = voidFloor.material;
 	mat.opacity += ( ( off >= 2 ? 0.55 : 0 ) - mat.opacity ) * Math.min( 1, dt * 4 );
 	voidFloor.visible = mat.opacity > 0.01;
