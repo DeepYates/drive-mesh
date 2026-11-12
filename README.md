@@ -177,8 +177,20 @@ a "Take the wheel" button, uses coarser tile detail and a compact HUD.
 
 Aerial imagery under and around the mesh (`buildBasemap`), loaded by the browser straight
 from the imagery server, with its attribution on screen. It is drawn as a backdrop (its
-depth is pinned just in front of the sky), so the mesh always shows over it however the
-ground rises and falls; its height follows the ground under the car. `?sat=0` turns it off.
+depth is pinned just in front of the sky), so the mesh always shows over it. `?sat=0` turns
+it off.
+
+**It is draped over the ground** (`terrain` in `src/main.js`), so it meets the mesh at the
+mesh's own height. The ground is learnt as the car drives, because the mesh is only at full
+detail near the car: exact heights under the car, a few rays a frame at tiles within 55 m
+that already have their BVH (the highest surface near the ground already known there, which
+skips canopy, poles and stray fragments), and known heights spread outward to fill holes
+and the area beyond the capture. Each imagery piece is a grid that eases onto that surface.
+Measured against the mesh's ground along a route: median 1 cm, 90% within 7 cm on Pinellas
+(a flat sheet at the car's level: 7 cm and 33 cm); 6 cm and 14 cm on the larger Iowa mesh,
+whose height grid is coarser (8 m cells against 3 m). No measurable frame cost. `?drape=0`
+keeps the flat sheet for comparison. Things that stand up from the ground (buildings, trees,
+parked cars) are still painted flat: the source is a top-down photo.
 
 The default source is Esri World Imagery. A mesh can name its own in the catalogue:
 

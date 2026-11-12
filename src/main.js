@@ -321,7 +321,7 @@ async function boot() {
 
 		}
 
-		model.traverse( o => o.isMesh && o.geometry.boundsTree && o.geometry.disposeBoundsTree() );
+		model.traverse( o => { if ( ! o.isMesh ) return; bvhMeshes.delete( o ); if ( o.geometry.boundsTree ) o.geometry.disposeBoundsTree(); } );
 
 	} );
 	frame.ecefToLocal().decompose( tiles.group.position, tiles.group.quaternion, tiles.group.scale );
@@ -398,7 +398,8 @@ async function boot() {
 // metres is small enough that Web Mercator is affine to within centimetres.
 const SAT_DEFAULT = { url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
 	maxZoom: 19, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' };
-const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_CHUNK = 3, SAT_DROP = 0.3;
+const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_CHUNK = 3;
+const SAT_DROP = 0.06;      // the picture sits this far under the ground it was measured from (it cannot poke through: see pinned*)
 const DETAIL_RADIUS = 70, DETAIL_KEEP = 28;      // metres around the car; detail pieces kept in memory
 let basemap = null, detailAt = 0;
 
@@ -406,14 +407,174 @@ let basemap = null, detailAt = 0;
 // would cover the mesh. Its depth is therefore pinned just in front of the sky: every real
 // surface (mesh, cars) is nearer and draws over it, whatever the two heights are, and it
 // still hides the sky dome's flat ground colour. Its height only decides where the picture
-// lands on screen; tick() keeps that at the ground under the car. The detail layer is pinned
+// lands on screen, which is why it is draped over the terrain. The detail layer is pinned
 // a hair nearer than the wide one, so it wins where both exist.
 const pinnedWide = shader => { shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999999;' ); };
 const pinnedDetail = shader => { shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999998;' ); };
 
+// ---------- terrain under the imagery ----------
+// The imagery is draped over the ground, and the ground is learnt from the mesh as the car
+// drives: the mesh is only at full detail near the car, so that is the only place a height
+// can be read accurately. `terrain.h` is a grid of ground heights over the mesh and its
+// margin (NaN = not known yet), filled three ways:
+//   - under the car, every frame, from the car itself (exact);
+//   - around the car, a few rays a frame: the highest surface within reach of the ground
+//     already known nearby, which skips tree canopy, poles and wires above and stray mesh
+//     fragments below. A spot is read again when the car is much closer than last time,
+//     because the mesh there is sharper then;
+//   - everywhere else, by spreading known heights outward (`filled`), so the picture meets
+//     the edge of the mesh at the edge's own height and carries on from there. Far from any
+//     known ground it is flat at the car's level, which is what the whole picture used to be.
+// drapeBasemap() eases every nearby piece of imagery toward `filled` a few times a second.
+const TERRAIN_REACH = 55;      // metres round the car in which heights are read
+const DRAPE = params.get( 'drape' ) !== '0';
+const terrain = { cell: 3, nx: 0, nz: 0, x0: 0, z0: 0, h: null, from: null, tried: null, filled: null, level: 0, dirty: true,
+	queue: [], fast: [], queuedAt: 0, filledAt: 0, drapedAt: 0, known: 0 };
+
+function initTerrain() {
+
+	const w = bounds.maxX - bounds.minX + 2 * SAT_MARGIN, d = bounds.maxZ - bounds.minZ + 2 * SAT_MARGIN;
+	terrain.cell = Math.max( 3, Math.ceil( Math.max( w, d ) / 420 ) );      // a big mesh gets a coarser grid, not a bigger one
+	terrain.nx = Math.ceil( w / terrain.cell ) + 1; terrain.nz = Math.ceil( d / terrain.cell ) + 1;
+	terrain.x0 = bounds.minX - SAT_MARGIN; terrain.z0 = bounds.minZ - SAT_MARGIN;
+	const n = terrain.nx * terrain.nz;
+	terrain.h = new Float32Array( n ).fill( NaN );           // measured ground height
+	terrain.from = new Float32Array( n ).fill( Infinity );   // how far the car was when it was measured
+	terrain.tried = new Float32Array( n );                   // when a ray last found nothing usable
+	terrain.filled = new Float32Array( n ).fill( NaN );      // measured + spread outward
+
+}
+
+/** Ground height at a point: the filled grid, bilinearly; the car's level where nothing is known. */
+function terrainHeight( x, z ) {
+
+	const t = terrain;
+	if ( ! t.filled ) return t.level;
+	const fx = ( x - t.x0 ) / t.cell, fz = ( z - t.z0 ) / t.cell;
+	const i = Math.max( 0, Math.min( t.nx - 2, Math.floor( fx ) ) ), j = Math.max( 0, Math.min( t.nz - 2, Math.floor( fz ) ) );
+	const u = Math.max( 0, Math.min( 1, fx - i ) ), v = Math.max( 0, Math.min( 1, fz - j ) ), o = j * t.nx + i;
+	const at = k => Number.isNaN( t.filled[ k ] ) ? t.level : t.filled[ k ];
+	return ( at( o ) * ( 1 - u ) + at( o + 1 ) * u ) * ( 1 - v ) + ( at( o + t.nx ) * ( 1 - u ) + at( o + t.nx + 1 ) * u ) * v;
+
+}
+
+/** Each driving frame: note the ground under the car, and read a few more spots around it. */
+function sampleTerrain( now ) {
+
+	const t = terrain;
+	if ( ! t.h ) return;
+	const ground = car.pos.y + CAR_GROUND_Y;
+	t.level += ( ground - t.level ) * 0.05;
+	const ci = Math.round( ( car.pos.x - t.x0 ) / t.cell ), cj = Math.round( ( car.pos.z - t.z0 ) / t.cell );
+	if ( ci < 0 || cj < 0 || ci >= t.nx || cj >= t.nz ) return;
+	// exact, when the car is actually standing on mesh
+	if ( car.wheels.every( w => w.onMesh ) ) { const o = cj * t.nx + ci; if ( t.from[ o ] > 0 ) { if ( Number.isNaN( t.h[ o ] ) ) t.known ++; t.h[ o ] = ground; t.from[ o ] = 0; t.dirty = true; } }
+
+	// which spots to read next: unknown ones, or ones last read from more than twice as far, nearest first
+	if ( now - t.queuedAt > 500 ) {
+
+		t.queuedAt = now;
+		const r = Math.ceil( TERRAIN_REACH / t.cell ), list = [];
+		for ( let j = Math.max( 0, cj - r ); j <= Math.min( t.nz - 1, cj + r ); j ++ ) for ( let i = Math.max( 0, ci - r ); i <= Math.min( t.nx - 1, ci + r ); i ++ ) {
+
+			const o = j * t.nx + i, dist = Math.hypot( i - ci, j - cj ) * t.cell;
+			if ( dist > TERRAIN_REACH || now - t.tried[ o ] < 4000 ) continue;
+			if ( Number.isNaN( t.h[ o ] ) || t.from[ o ] > 2 * dist + 6 ) list.push( [ dist, o ] );
+
+		}
+
+		list.sort( ( a, b ) => b[ 0 ] - a[ 0 ] );      // nearest last: taken from the end
+		t.queue = list;
+		// Rays go only at displayed tiles that already have their BVH. Against a tile without
+		// one a single ray can cost milliseconds - most of a frame - and those tiles get their
+		// BVH within a second or two anyway, when the spot is simply tried again.
+		t.fast = [];
+		for ( const [ m, model ] of bvhMeshes ) if ( model.parent ) t.fast.push( m );
+
+	}
+
+	const top = bounds.halfY + 60, t0 = performance.now();
+	raycaster.near = 0; raycaster.far = 2 * bounds.halfY + 200; raycaster.firstHitOnly = false;
+	while ( t.queue.length && t.fast.length && performance.now() - t0 < 1.2 ) {
+
+		const [ dist, o ] = t.queue.pop();
+		const x = t.x0 + ( o % t.nx ) * t.cell, z = t.z0 + Math.floor( o / t.nx ) * t.cell;
+		raycaster.set( _go.set( x, top, z ), _gd );
+		// "ground" = the highest surface no more than 1.2 m above (and 3 m below) the ground
+		// already known here: under a tree that is the road, not the leaves
+		const ref = Number.isNaN( t.filled[ o ] ) ? ground : t.filled[ o ];
+		let y = NaN;
+		for ( const hit of raycaster.intersectObjects( t.fast, false ) ) if ( hit.point.y <= ref + 1.2 && hit.point.y >= ref - 3 ) { y = hit.point.y; break; }      // hits come top-down
+		if ( Number.isNaN( y ) ) { t.tried[ o ] = now; continue; }
+		if ( Number.isNaN( t.h[ o ] ) ) t.known ++;
+		t.h[ o ] = y; t.from[ o ] = dist; t.dirty = true;
+
+	}
+
+}
+
+/** Spread what is known outward, in a window round the car (the rest keeps what it had). */
+function fillTerrain() {
+
+	const t = terrain, half = Math.ceil( 190 / t.cell );
+	const ci = Math.round( ( car.pos.x - t.x0 ) / t.cell ), cj = Math.round( ( car.pos.z - t.z0 ) / t.cell );
+	const i0 = Math.max( 0, ci - half ), i1 = Math.min( t.nx - 1, ci + half ), j0 = Math.max( 0, cj - half ), j1 = Math.min( t.nz - 1, cj + half );
+	if ( i1 < i0 || j1 < j0 ) return;
+	// breadth-first from every measured cell: each unknown cell takes the height of the nearest known one
+	const frontier = [];
+	for ( let j = j0; j <= j1; j ++ ) for ( let i = i0; i <= i1; i ++ ) { const o = j * t.nx + i; t.filled[ o ] = t.h[ o ]; if ( ! Number.isNaN( t.h[ o ] ) ) frontier.push( o ); }
+	for ( let q = 0; q < frontier.length; q ++ ) {
+
+		const o = frontier[ q ], i = o % t.nx, j = ( o - i ) / t.nx, y = t.filled[ o ];
+		if ( i > i0 && Number.isNaN( t.filled[ o - 1 ] ) ) { t.filled[ o - 1 ] = y; frontier.push( o - 1 ); }
+		if ( i < i1 && Number.isNaN( t.filled[ o + 1 ] ) ) { t.filled[ o + 1 ] = y; frontier.push( o + 1 ); }
+		if ( j > j0 && Number.isNaN( t.filled[ o - t.nx ] ) ) { t.filled[ o - t.nx ] = y; frontier.push( o - t.nx ); }
+		if ( j < j1 && Number.isNaN( t.filled[ o + t.nx ] ) ) { t.filled[ o + t.nx ] = y; frontier.push( o + t.nx ); }
+
+	}
+
+	// "nearest known" meets its neighbour in a step: a few rounds of averaging soften the spread part only
+	for ( let pass = 0; pass < 4; pass ++ ) for ( let j = j0 + 1; j < j1; j ++ ) for ( let i = i0 + 1; i < i1; i ++ ) {
+
+		const o = j * t.nx + i;
+		if ( ! Number.isNaN( t.h[ o ] ) || Number.isNaN( t.filled[ o ] ) ) continue;
+		const a = t.filled[ o - 1 ], b = t.filled[ o + 1 ], c = t.filled[ o - t.nx ], d = t.filled[ o + t.nx ];
+		if ( ! Number.isNaN( a + b + c + d ) ) t.filled[ o ] = ( a + b + c + d ) / 4;
+
+	}
+
+}
+
+/** A few times a second: refresh the filled grid if anything was learnt, and ease nearby imagery onto it. */
+function drapeBasemap( now ) {
+
+	const t = terrain;
+	if ( ! basemap || ! t.h || now - t.drapedAt < 250 ) return;
+	t.drapedAt = now;
+	if ( t.dirty && now - t.filledAt > 700 ) { t.dirty = false; t.filledAt = now; fillTerrain(); }
+	for ( const quad of basemap.children ) {
+
+		const [ qx, qz ] = quad.userData.at ?? [ 0, 0 ];
+		if ( Math.hypot( qx - car.pos.x, qz - car.pos.z ) > 420 ) continue;      // far pieces keep the shape they had
+		const pos = quad.geometry.attributes.position, a = pos.array;
+		let moved = false;
+		for ( let k = 0; k < a.length; k += 3 ) {
+
+			const want = terrainHeight( a[ k ], a[ k + 2 ] ) - SAT_DROP, d = want - a[ k + 1 ];
+			if ( Math.abs( d ) > 0.004 ) { a[ k + 1 ] += d * 0.5; moved = true; }
+
+		}
+
+		if ( moved ) pos.needsUpdate = true;
+
+	}
+
+}
+
 function buildBasemap( [ west, south, east, north ] ) {
 
 	if ( params.get( 'sat' ) === '0' ) return;
+	initTerrain();
 	const src = { ...SAT_DEFAULT, ...( mesh.basemap || {} ) };
 	const tileUrl = ( z, x, y ) => src.url.replace( '{z}', z ).replace( '{y}', y ).replace( '{x}', x );
 	const dLat = SAT_MARGIN / 6371000, dLon = dLat / Math.cos( ( south + north ) / 2 );
@@ -456,15 +617,33 @@ function buildBasemap( [ west, south, east, north ] ) {
 		if ( ! got ) return null;
 		const tex = new THREE.CanvasTexture( canvas );
 		tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = anisotropy;
+		// A grid, not a flat quad: each point takes the ground height there (terrain, below),
+		// so the picture lies on the land. Points are spaced about one terrain cell apart.
+		const nw = corner( z, k.cx, k.cy ), ne = corner( z, k.ex + 1, k.cy ), sw = corner( z, k.cx, k.ey + 1 ), se = corner( z, k.ex + 1, k.ey + 1 );
+		const seg = Math.max( 2, Math.min( 24, Math.round( Math.hypot( ne[ 0 ] - nw[ 0 ], ne[ 2 ] - nw[ 2 ] ) / Math.max( terrain.cell, 6 ) ) ) );
+		const pos = new Float32Array( ( seg + 1 ) * ( seg + 1 ) * 3 ), uv = new Float32Array( ( seg + 1 ) * ( seg + 1 ) * 2 ), index = [];
+		for ( let j = 0; j <= seg; j ++ ) for ( let i = 0; i <= seg; i ++ ) {
+
+			const u = i / seg, v = j / seg, o = j * ( seg + 1 ) + i;      // v runs north -> south
+			const x = ( nw[ 0 ] * ( 1 - u ) + ne[ 0 ] * u ) * ( 1 - v ) + ( sw[ 0 ] * ( 1 - u ) + se[ 0 ] * u ) * v;
+			const zz = ( nw[ 2 ] * ( 1 - u ) + ne[ 2 ] * u ) * ( 1 - v ) + ( sw[ 2 ] * ( 1 - u ) + se[ 2 ] * u ) * v;
+			pos[ o * 3 ] = x; pos[ o * 3 + 1 ] = terrainHeight( x, zz ) - SAT_DROP; pos[ o * 3 + 2 ] = zz;
+			uv[ o * 2 ] = u; uv[ o * 2 + 1 ] = 1 - v;
+			if ( i < seg && j < seg ) index.push( o, o + seg + 1, o + 1, o + 1, o + seg + 1, o + seg + 2 );
+
+		}
+
 		const geo = new THREE.BufferGeometry();
-		geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
-			...corner( z, k.cx, k.cy ), ...corner( z, k.ex + 1, k.cy ), ...corner( z, k.cx, k.ey + 1 ), ...corner( z, k.ex + 1, k.ey + 1 ) ], 3 ) );    // NW NE SW SE
-		geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
-		geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
+		geo.setAttribute( 'position', new THREE.BufferAttribute( pos, 3 ) );
+		geo.setAttribute( 'uv', new THREE.BufferAttribute( uv, 2 ) );
+		geo.setIndex( index );
 		const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da, alphaTest: detail ? 0.5 : 0 } );
 		mat.onBeforeCompile = detail ? pinnedDetail : pinnedWide;
 		const quad = new THREE.Mesh( geo, mat );
 		quad.renderOrder = detail ? - 1 : - 2;      // wide first, detail over it, both before the mesh
+		quad.frustumCulled = false;                 // its heights change; there are only a few dozen of these
+		const mid = corner( z, ( k.cx + k.ex + 1 ) / 2, ( k.cy + k.ey + 1 ) / 2 );
+		quad.userData.at = [ mid[ 0 ], mid[ 2 ] ];
 		return quad;
 
 	};
@@ -991,6 +1170,7 @@ function startBvhWorkers( n ) {
 					{ roots: data.roots, indirectBuffer: data.indirectBuffer, index: null }, geometry, { setIndex: false } );
 				bvhJobs.delete( job );
 				job.state = 'done';
+				bvhMeshes.set( job.mesh, job.model );
 				perf.bvhBuildMs += data.ms; perf.bvhMainMs += performance.now() - t0; perf.bvhTiles ++;
 
 			};
@@ -1018,10 +1198,14 @@ function buildBvhSync( job ) {
 	job.mesh.geometry.computeBoundsTree( { indirect: true } );
 	bvhJobs.delete( job );
 	job.state = 'done';
+	bvhMeshes.set( job.mesh, job.model );
 	const ms = performance.now() - t0;
 	perf.bvhBuildMs += ms; perf.bvhMainMs += ms; perf.bvhTiles ++;
 
 }
+
+// tile meshes that have a BVH -> the tile model they belong to (which is displayed while it has a parent)
+const bvhMeshes = new Map();
 
 let bvhPumpAt = 0;
 function pumpBvh() {
@@ -1252,7 +1436,7 @@ function trySpawn() {
 		closeFor: Math.round( closeFor ), settled, shown: tiles.stats.visible } );
 	if ( basemap ) {
 
-		basemap.position.y = hit.point.y - SAT_DROP;
+		terrain.level = hit.point.y;      // until the ground is learnt, the picture is flat at this height
 		basemap.visible = true;
 		basemap.userData.load?.( s.x, s.z );
 
@@ -1420,7 +1604,9 @@ function tick() {
 
 		net.send( car, carBraking, now );
 		// the satellite picture follows the ground under the car (see buildBasemap)
-		if ( basemap ) basemap.position.y += ( car.pos.y + CAR_GROUND_Y - SAT_DROP - basemap.position.y ) * Math.min( 1, dt * 2 );
+		// the imagery lies on the ground, and the ground is learnt as the car drives (terrain, above)
+		// (`?drape=0` leaves it a flat sheet at the car's level, for comparison)
+		if ( basemap ) { if ( DRAPE ) sampleTerrain( now ); else terrain.level += ( car.pos.y + CAR_GROUND_Y - terrain.level ) * Math.min( 1, dt * 2 ); drapeBasemap( now ); }
 		// sharper imagery around the car, where the source has it (a few times a second is plenty)
 		if ( basemap?.userData.near && now > detailAt ) { detailAt = now + 300; basemap.userData.near( car.pos.x, car.pos.z ); }
 		if ( ( driveTime += dt ) > 90 ) nudge( 'time', 'Like what you see? We can mesh your streets too.' );
@@ -1893,12 +2079,27 @@ async function carShot( id, width = 480, height = 300 ) {
 
 window.__game = {
 	carShot,
+	/** For test/drape checks: mesh ground vs imagery height at the car, to each side and ahead. */
+	drapeProbe() {
+
+		const out = [], ground = car.pos.y + CAR_GROUND_Y;
+		for ( const [ along, side ] of [ [ 0, 0 ], [ 0, 9 ], [ 0, - 9 ], [ 18, 0 ], [ 18, 7 ], [ 18, - 7 ], [ - 15, 0 ] ] ) {
+
+			const x = car.pos.x + car.fwd.x * along + car.right.x * side, z = car.pos.z + car.fwd.z * along + car.right.z * side;
+			const y = groundAt( x, z );
+			if ( y !== null ) out.push( { mesh: y, imagery: terrainHeight( x, z ), flat: ground } );
+
+		}
+
+		return out;
+
+	},
 	exportRoutes,
 	/** multiplayer: connection status, own id, and where each peer is drawn right now */
 	get net() {
 
 		return { status: net.status, id: net.id, url: net.url,
-			name: myName, unlimited, car: myCar, sceneUrl: document.getElementById( 'arcgis' ).hidden ? '' : document.getElementById( 'arcgis' ).href, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
+			name: myName, unlimited, terrain: { cell: terrain.cell, known: terrain.known, cells: terrain.nx * terrain.nz }, car: myCar, sceneUrl: document.getElementById( 'arcgis' ).hidden ? '' : document.getElementById( 'arcgis' ).href, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
 
 	},
 	get state() {
