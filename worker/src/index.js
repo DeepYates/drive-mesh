@@ -184,7 +184,7 @@ async function enter( body, env, gate, cors ) {
 
 	if ( ! gate ) return reply( { ok: true }, cors );    // no gate bound: nothing to count against
 	const r = await ( await gate.fetch( 'https://gate/enter', { method: 'POST', body: JSON.stringify( { mesh } ) } ) ).json();
-	if ( ! r.ok ) return reply( { ok: false }, cors );
+	if ( ! r.ok ) return reply( { ok: false, limit: r.limit }, cors );      // the page tells the visitor the daily number
 	const nonce = crypto.randomUUID().replace( /-/g, '' );
 	return reply( { ok: true, pass: env.PASS_KEY ? `${day}.${nonce}.${await sign( `${day}.${nonce}`, env.PASS_KEY )}` : undefined }, cors );
 

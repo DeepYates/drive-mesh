@@ -111,6 +111,7 @@
   #gateError { margin: 0; color: #ffb4a8; font-weight: 600; }
   #gateError:empty { display: none; }
   #gateNote, #gateKnown { margin: 0; opacity: .72; }
+  #startBusy { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 0; }
   #gateNotMe { border: 0; background: none; color: var(--gold); text-decoration: underline; cursor: pointer; padding: 0; }
 
   /* phones: on-screen controls, compact HUD */
@@ -175,7 +176,7 @@
     <h1 id="startTitle"></h1>
     <p id="startPitch"></p>
     <div id="meshes" role="radiogroup" aria-label="Choose a mesh"></div>
-    <h2 class="step">Choose your car</h2>
+    <h2 id="carsTitle" class="step">Choose your car</h2>
     <div id="cars" role="radiogroup" aria-label="Choose your car"></div>
     <form id="gate" novalidate>
       <div class="pair">
@@ -199,7 +200,8 @@
       <p id="gateError" role="alert"></p>
       <button id="gateGo" type="submit">Drive</button>
     </form>
-    <p id="startBusy" hidden><a id="busyCta" class="pill primary" target="_blank" rel="noopener">Talk to DeepWalk</a></p>
+    <p id="startBusy" hidden><a id="busyCta" class="pill primary" target="_blank" rel="noopener">Talk to DeepWalk</a>
+      <button id="busyRetry" class="pill" type="button" hidden>Try again</button></p>
   </div>
 </main>
 <script type="module" src="./bundle.js"></script>

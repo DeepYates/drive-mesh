@@ -90,6 +90,7 @@ async function visitor( { site = {}, block = null, query = '', extraMesh = false
 		g: expr => page.evaluate( `(() => { const g = window.__game; return ${expr}; })()` ),
 		shown: id => page.evaluate( id => { const el = document.getElementById( id ); return !! el && ! el.hidden && el.getClientRects().length > 0; }, id ),
 		text: id => page.evaluate( id => document.getElementById( id ).textContent.trim(), id ),
+		notice: () => page.evaluate( () => document.getElementById( 'start' ).hidden ? '' : document.getElementById( 'start' ).dataset.notice || '' ),
 		async fill( email, name, company = '' ) {
 
 			for ( const [ id, value ] of [ [ 'gateEmail', email ], [ 'gateName', name ], [ 'gateCompany', company ] ] ) {
@@ -176,13 +177,22 @@ try {
 	const n2 = await g.g( 'g.net.tileBudget.n' );
 	check( still >= 3 && n2 === n1 && n1 <= 90 + 30 && /limit/.test( dbg.nudge ), 'G: past the hard stop streaming stops and the visitor is told',
 		`settled at ${n1} (limit 90 + up to 25 in flight), still ${n2} after driving on; "${dbg.nudge}"` );
+	check( /resets (today|tomorrow) at \d/.test( dbg.nudge ) && /daily limit reached/.test( await g.text( 'status' ) ), 'G: the message gives the reset time, and the HUD keeps a line about the limit', await g.text( 'status' ) );
+	// coming back after using the allowance: a clear page, not an endless "Finding the road"
+	await g.page.reload( { waitUntil: 'load' } );
+	await g.until( 'allowance page', async () => ( await g.notice() ) === 'tiles', 20000 );
+	await sleep( 1500 );
+	check( /driving allowance/.test( await g.text( 'startTitle' ) ) && /(today|tomorrow) at \d/.test( await g.text( 'startPitch' ) ) && await g.shown( 'busyCta' ) && await g.page.evaluate( () => document.getElementById( 'overlay' ).classList.contains( 'hidden' ) ),
+		'G: a return visit after the limit shows the allowance page with the reset time (no spinner)', await g.text( 'startPitch' ) );
 	await g.ctx.close();
 
 	// ----- C. the day is full (DAILY_USERS = 3: A, D and G took the places)
 	const c = await visitor();
 	await c.fill( 'late@example.com', 'Cy' );
-	await c.until( 'capacity page', async () => /capacity/.test( await c.text( 'startTitle' ) ), 20000 );
-	check( await c.shown( 'start' ) && await c.shown( 'busyCta' ) && ! await c.shown( 'gateGo' ), 'C: the 4th visitor sees the capacity page with the call to action' );
+	await c.until( 'capacity page', async () => ( await c.notice() ) === 'full', 20000 );
+	check( await c.shown( 'start' ) && await c.shown( 'busyCta' ) && ! await c.shown( 'gateGo' ) && ! await c.shown( 'cars' ) && ! await c.shown( 'busyRetry' ), 'C: the 4th visitor sees the capacity page with the call to action and nothing to fill in' );
+	const said = await c.text( 'startPitch' );
+	check( /all taken/.test( await c.text( 'startTitle' ) ) && /\b3 drives a day\b/.test( said ) && /(today|tomorrow) at \d/.test( said ) && /have your email/.test( said ), 'C: it says how many drives a day, when more open, and that the email was kept', said );
 	check( leads.at( - 1 ).f.email === 'late@example.com' && leads.at( - 1 ).f.drive_demo_outcome === 'at_capacity', 'C: their lead still reached HubSpot, tagged at_capacity' );
 	check( await c.g( 'window.__game?.state' ) === 'boot', 'C: the game did not start (no tiles fetched)' );
 	await c.page.screenshot( { path: join( out, 'gate_busy.png' ) } );
@@ -194,7 +204,7 @@ try {
 	const basic = await visitor( { site: { hubspot: { formGuid: 'email-only' } } } );
 	const before2 = leads.length;
 	await basic.fill( 'basic@example.com', 'Bea', 'Basic Co' );
-	await basic.until( 'capacity page', async () => /capacity/.test( await basic.text( 'startTitle' ) ), 20000 );
+	await basic.until( 'capacity page', async () => ( await basic.notice() ) === 'full', 20000 );
 	const tries = leads.slice( before2 ), kept = tries.at( - 1 );
 	check( tries.length === 1 && ! kept.error && Object.keys( kept.f ).join() === 'email' && kept.f.email === 'basic@example.com',
 		'I: for a form with only an email field, the form definition is read and only the email is sent', JSON.stringify( tries.map( t => Object.keys( t.f ) ) ) );
@@ -206,7 +216,7 @@ try {
 	const blind = await visitor( { site: { hubspot: { formGuid: 'no-definition' } } } );
 	const before3 = leads.length;
 	await blind.fill( 'blind@example.com', 'Jo', '' );
-	await blind.until( 'capacity page', async () => /capacity/.test( await blind.text( 'startTitle' ) ), 20000 );
+	await blind.until( 'capacity page', async () => ( await blind.notice() ) === 'full', 20000 );
 	const tries3 = leads.slice( before3 );
 	check( tries3.length === 3 && tries3[ 0 ].error === 'FIELD_NOT_IN_FORM_DEFINITION' && tries3[ 1 ].error === 'FIELD_NOT_IN_FORM_DEFINITION' && ! tries3[ 2 ].error && Object.keys( tries3[ 2 ].f ).join() === 'email',
 		'J: without a readable definition, the lead is re-sent in smaller shapes until accepted', JSON.stringify( tries3.map( t => Object.keys( t.f ).length ) ) );
@@ -215,7 +225,8 @@ try {
 	// ----- E. the Worker is unreachable (what the free plan's daily stop looks like)
 	const e = await visitor( { block: /127\.0\.0\.1:8787/ } );
 	await e.fill( 'down@example.com', 'Eve' );
-	await e.until( 'capacity page', async () => /capacity/.test( await e.text( 'startTitle' ) ), 20000 );
+	await e.until( 'capacity page', async () => ( await e.notice() ) === 'unreachable', 20000 );
+	check( await e.shown( 'busyRetry' ) && /can.t be reached/.test( await e.text( 'startTitle' ) ) && /(today|tomorrow) at \d/.test( await e.text( 'startPitch' ) ), 'E: an unreachable server gets its own message, with the reset time and a Try again button', await e.text( 'startTitle' ) );
 	check( leads.at( - 1 ).f.email === 'down@example.com' && leads.at( - 1 ).via === 'browser', 'E: with the Worker down the visitor gets the capacity page and the lead is still captured' );
 	await e.ctx.close();
 

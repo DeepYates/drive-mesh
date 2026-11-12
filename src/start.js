@@ -26,16 +26,61 @@ async function admit( api, mesh ) {
 
 		const res = await fetch( new URL( 'enter', api ), { method: 'POST', headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify( { mesh, pass: get( PASS_KEY ) || undefined } ) } );
-		if ( ! res.ok ) return { ok: false };
+		if ( ! res.ok ) return { ok: false, reason: 'unreachable' };
 		const r = await res.json();
 		if ( r.pass ) set( PASS_KEY, r.pass );
-		return r;
+		return r.ok ? r : { ...r, reason: 'full' };      // the day's places are taken
 
 	} catch {
 
-		return { ok: false };      // unreachable: the free plan's daily stop looks like this
+		return { ok: false, reason: 'unreachable' };      // the free plan's daily stop looks like this, and so does a dropped connection
 
 	}
+
+}
+
+/** When the daily limits reset (00:00 UTC), in the visitor's own time: "today at 6:00 PM". */
+export function resetWhen() {
+
+	const now = new Date(), reset = new Date( Date.UTC( now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1 ) );
+	const time = reset.toLocaleTimeString( [], { hour: 'numeric', minute: '2-digit' } );
+	return `${reset.toDateString() === now.toDateString() ? 'today' : 'tomorrow'} at ${time}`;
+
+}
+
+/**
+ * A full-page notice in place of the start screen, for when the visitor cannot drive:
+ *   'full'         today's visitor places are taken
+ *   'unreachable'  the demo's server did not answer
+ *   'tiles'        this visitor has used their own daily allowance of mesh
+ *   'mesh'         the game started but the mesh is not arriving
+ * Each says what happened, when it resets and what to do next.
+ */
+export function showNotice( site, kind, { hasEmail = false, limit = 0 } = {} ) {
+
+	const when = resetWhen();
+	const text = {
+		full: [ 'Today\u2019s demo drives are all taken',
+			`To keep this demo free we run ${limit || 'a limited number of'} drives a day, and today\u2019s have all been used. New drives open ${when} (your time).${hasEmail ? ' We have your email and will follow up.' : ''}` ],
+		unreachable: [ 'The demo can\u2019t be reached right now',
+			`We couldn\u2019t connect to the demo\u2019s server. It may have used up its free allowance for the day, which resets ${when} (your time), or your connection may have dropped. Try again in a moment.` ],
+		tiles: [ 'You\u2019ve used today\u2019s driving allowance',
+			`Each visitor can load a set amount of 3D mesh per day, and you have reached it. Your allowance resets ${when} (your time). Want a longer look? We would be glad to walk you through it.` ],
+		mesh: [ 'The mesh isn\u2019t loading',
+			`The demo started, but the 3D mesh did not arrive. The demo may have used up its free allowance for the day, which resets ${when} (your time), or something on your network may be blocking it. Try again in a moment.` ],
+	}[ kind ];
+	$( 'startTitle' ).textContent = text[ 0 ];
+	$( 'startPitch' ).textContent = text[ 1 ];
+	for ( const id of [ 'meshes', 'cars', 'carsTitle', 'gate' ] ) $( id ).hidden = true;
+	const cta = $( 'busyCta' ), retry = $( 'busyRetry' );
+	cta.textContent = site.ctaLabel || 'Talk to DeepWalk'; cta.href = site.ctaUrl || '#'; cta.hidden = ! site.ctaUrl;
+	retry.hidden = kind !== 'unreachable' && kind !== 'mesh';
+	retry.onclick = () => location.reload();
+	$( 'startBusy' ).hidden = false;
+	const box = $( 'start' );
+	box.dataset.notice = kind;
+	box.hidden = false;
+	$( 'overlay' ).classList.add( 'hidden' );
 
 }
 
@@ -111,20 +156,7 @@ export async function start( { params, asset, api } ) {
 		const box = $( 'start' ), form = $( 'gate' ), error = $( 'gateError' ), button = $( 'gateGo' );
 		const fields = { email: $( 'gateEmail' ), name: $( 'gateName' ), company: $( 'gateCompany' ) };
 
-		const busy = () => {
-
-			$( 'startTitle' ).textContent = 'Today’s demo is at capacity';
-			$( 'startPitch' ).textContent = lead || ! gateOn
-				? 'We only run a limited number of drives a day. Come back tomorrow, or talk to us now and we will show you the meshes ourselves.'
-				: 'We only run a limited number of drives a day. Come back tomorrow, or talk to us now.';
-			$( 'meshes' ).hidden = form.hidden = true;
-			const cta = $( 'busyCta' );
-			cta.textContent = site.ctaLabel || 'Talk to DeepWalk'; cta.href = site.ctaUrl || '#';
-			$( 'startBusy' ).hidden = ! site.ctaUrl;
-			box.hidden = false;
-			$( 'overlay' ).classList.add( 'hidden' );
-
-		};
+		const busy = adm => showNotice( site, adm.reason || 'full', { hasEmail: gateOn && !! lead, limit: adm.limit } );
 
 		/** admission, then the lead, then in (or the capacity page) */
 		const enter = async candidate => {
@@ -138,7 +170,7 @@ export async function start( { params, asset, api } ) {
 			}
 
 			if ( gateOn ) saveLead( lead = candidate );
-			if ( ! adm.ok ) { busy(); return 'busy'; }
+			if ( ! adm.ok ) { busy( adm ); return 'busy'; }
 			const name = gateOn ? candidate.name : candidate.name || '';
 			set( NAME_KEY, name ); set( CAR_KEY, car );
 			const u = new URL( location.href );

@@ -9,7 +9,7 @@ import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree, MeshBVH } fro
 import { makeFrame } from './geo.js';
 import { CAR, Vehicle } from './vehicle.js';
 import { Net } from './net.js';
-import { start } from './start.js';
+import { resetWhen, showNotice, start } from './start.js';
 import { initTouch, isTouch } from './touch.js';
 import { buildCar, disposeCar, isCar, DEFAULT_CAR, LIVERIES, SCALE as CAR_SCALE, WHEEL_RADIUS as CAR_WHEEL_RADIUS } from './cars.js';
 
@@ -220,12 +220,22 @@ function fail( err ) {
 
 	console.error( err );
 	renderer.setAnimationLoop( null );    // the HUD would otherwise overwrite the message
+	// the tileset itself did not come: the Worker is down or out of allowance, or the network is
+	if ( /^tileset /.test( err?.message ?? '' ) || err instanceof TypeError ) return showNotice( site, 'unreachable' );
 	$( 'overlay' ).classList.add( 'failed' );
 	$( 'overlayText' ).textContent = 'Failed to start: ' + err.message;
 
 }
 
 async function boot() {
+
+	// A visitor who has used their daily allowance of mesh gets told so, with the reset time.
+	// Without this the page would boot with streaming switched off and sit on "Finding the
+	// road" for ever, because nothing - not even tiles in the browser's cache - can load.
+	await checkUnlimited();
+	loadTileBudget();
+	if ( ! unlimited && budget.n >= ( site.tileHardStop || 4000 ) ) return showNotice( site, 'tiles' );
+	bootAt = performance.now();
 
 	const TILESET = `${TILES_BASE}${mesh.id}/tileset.json`;
 	// A mesh may ship a route export (meshes.json: "routes": true -> routes/<id>.geojson);
@@ -346,7 +356,6 @@ async function boot() {
 
 	}
 
-	await checkUnlimited();
 	watchTileBudget();
 	wireBar();
 
@@ -688,14 +697,34 @@ async function checkUnlimited() {
 
 }
 
+let bootAt = 0, limitNote = '';      // limitNote: a line kept in the HUD while a tile limit is in force
+
+function loadTileBudget() {
+
+	try { const b = JSON.parse( localStorage.getItem( BUDGET_KEY ) ); if ( b?.day === budget.day ) budget.n = b.n; } catch { /* private window */ }
+
+}
+
 function watchTileBudget() {
 
 	const soft = unlimited ? Infinity : site.tileBudget || 3200, hard = unlimited ? Infinity : site.tileHardStop || 4000;
-	try { const b = JSON.parse( localStorage.getItem( BUDGET_KEY ) ); if ( b?.day === budget.day ) budget.n = b.n; } catch { /* private window */ }
 	const apply = () => {
 
-		if ( budget.n >= hard ) { tiles.downloadQueue.maxJobs = 0; nudge( 'hard', 'That is the limit of new terrain for this demo today. What you have loaded stays drivable.' ); }
-		else if ( budget.n >= soft ) { tiles.errorTarget = Math.max( tiles.errorTarget, 40 ); nudge( 'soft', 'You have covered a lot of ground. The mesh is at lower detail for the rest of today.' ); }
+		// The message says what changed, why, and when it resets; it can be dismissed, so the
+		// HUD keeps a line for as long as the limit applies.
+		if ( budget.n >= hard ) {
+
+			tiles.downloadQueue.maxJobs = 0;
+			limitNote = `<span class="warn">daily limit reached · no new areas load · resets ${esc( resetWhen() )}</span>`;
+			nudge( 'hard', `You have reached today\u2019s limit for this demo, so no new areas will load until it resets ${resetWhen()}. You can keep driving what is already loaded.` );
+
+		} else if ( budget.n >= soft ) {
+
+			tiles.errorTarget = Math.max( tiles.errorTarget, 40 );
+			limitNote = 'lower detail · daily allowance nearly used';
+			nudge( 'soft', `You have used most of today\u2019s driving allowance, so new areas now load at lower detail. It resets ${resetWhen()}.` );
+
+		}
 
 	};
 	apply();
@@ -1279,6 +1308,15 @@ function tick() {
 	last = now;
 	fps += ( 1 / Math.max( dt, 1e-3 ) - fps ) * 0.05;
 
+	// Still not driving half a minute after boot, with tiles failing: the Worker has run out
+	// of allowance mid-load, or the network is blocking the mesh. Say so rather than spin.
+	if ( firstDrive && state !== 'driving' && bootAt && now - bootAt > 30000 && ( stats.tilesFailed > 5 || tiles.stats.failed > 5 ) ) {
+
+		renderer.setAnimationLoop( null );
+		return showNotice( site, 'mesh' );
+
+	}
+
 	if ( state === 'loading' ) {
 
 		camera.updateMatrixWorld();
@@ -1675,7 +1713,7 @@ function drawHud() {
 		// a phone's HUD is small: the route and streaming numbers are left out there
 		( touch ? '' : `route ${routeIdx + 1}/${routes.length} · ${( routes[ routeIdx ]?.length ?? 0 ).toFixed( 0 )} m` +
 		`<br>tiles ${t.visible ?? '–'} shown · ${loading} loading · ${Math.round( fps )} fps` ) +
-		( unlimited && ! touch ? '<br>no tile limit' : '' ) +
+		( unlimited && ! touch ? '<br>no tile limit' : '' ) + ( limitNote ? `<br>${limitNote}` : '' ) +
 		( net.status === 'online' ? `${touch ? '' : '<br>'}${peerPoses.length + 1} online` : net.status === 'full' ? '<br>room full · driving solo' : '' ) +
 		( auto.on ? `<br><b>autopilot</b> ${( stats.routeProgress * 100 ).toFixed( 0 )}%` : '' ) +
 		( off && state === 'driving' ? `<br><span class="warn">${off}/4 wheels off mesh</span>` : '' ), true );
