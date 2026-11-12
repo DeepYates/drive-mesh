@@ -23,7 +23,13 @@
       "place": "Pinellas County, Florida",
       "blurb": "About 500 m of road, sidewalk and street furniture.",
       "thumb": "thumbs/pinellas.jpg",
-      "routeCache": true
+      "routeCache": true,
+      "basemap": {
+        "url": "https://egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer/tile/{z}/{y}/{x}",
+        "maxZoom": 19,
+        "detailZoom": 21,
+        "attribution": "Imagery: Pinellas County, Florida, 2026 (3 in)"
+      }
     },
     {
       "id": "johnston",

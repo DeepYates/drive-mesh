@@ -207,10 +207,11 @@ allow cross-origin requests.
 **Local-only settings:** on `localhost`/`127.0.0.1` the page also loads the git-ignored
 `static/meshes.local.json` and lays it over the catalogue
 (`{ "site": {...}, "meshes": { "<id>": {...} } }`). The live site never requests it.
-Pinellas is set there to the county's 2026 3-inch orthophotos
-(`egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer`, native at level 21), so
-that imagery shows locally only. To publish it, move that `basemap` block into the
-`pinellas` entry of `static/meshes.json`.
+Use it for settings that should not be published (the email gate off, no tile limit).
+
+Pinellas uses the county's 2026 3-inch orthophotos
+(`egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer`, native at level 21),
+set in its `basemap` entry in `static/meshes.json`.
 
 ## How the driving works
 
