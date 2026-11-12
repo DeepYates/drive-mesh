@@ -1,14 +1,50 @@
-# Tile proxy for the hosted Drive Mesh game. Deploy from this folder:
+# Tile proxy + multiplayer rooms for the hosted Drive Mesh game. Deploy from this folder:
 #
 #   npx wrangler login
 #   npx wrangler secret put TILESET_URL     # paste the full .../tileset.json URL (has the API key)
 #   npx wrangler deploy
 #
 # The deploy prints the Worker URL; the game's tileset is <that URL>/tiles/tileset.json.
+#
+# COST: keep this account on the Workers Free plan. Free never bills: at a daily limit
+# (100,000 requests; Durable Objects 100,000 requests + 13,000 GB-s) requests fail until
+# 00:00 UTC and the game falls back to single-player. Workers Paid has no spending cap.
 name = "drive-mesh-tiles"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
 [vars]
-# Sites allowed to use the proxy (comma-separated origins: scheme + host, no path).
+# Sites allowed to use the proxy and the rooms (comma-separated origins: scheme + host, no path).
 ALLOWED_ORIGINS = "https://deepyates.github.io"
+# "off" turns multiplayer off (the game keeps working single-player). Redeploy to apply.
+MULTIPLAYER = "on"
+# Players per room; one more gets "room full" and plays alone.
+MAX_PLAYERS = "8"
+
+# Multiplayer rooms (src/room.js). SQLite-backed: the only kind the Free plan allows.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Per-IP rate limits (approximate; counted per Cloudflare location). A cold start of the game
+# is a few hundred tile requests in the first half minute, so the tile limit sits well above that.
+# The room limit allows for several players behind one office address.
+[[ratelimits]]
+name = "LIMIT_TILES"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 1500
+  period = 60
+
+[[ratelimits]]
+name = "LIMIT_ROOMS"
+namespace_id = "1002"
+
+  [ratelimits.simple]
+  limit = 40
+  period = 60

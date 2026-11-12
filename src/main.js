@@ -8,6 +8,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree, MeshBVH } from 'three-mesh-bvh';
 import { makeFrame } from './geo.js';
 import { CAR, Vehicle } from './vehicle.js';
+import { Net } from './net.js';
 
 // Wheel and obstacle rays hit ~25k-triangle tiles every frame. Brute force cost 17 ms/frame;
 // a per-tile BVH makes each ray a few dozen tests. Trees are built in workers, and only for
@@ -147,6 +148,10 @@ const spawnLog = [];
 const perf = { frames: 0, cast: 0, step: 0, tiles: 0, render: 0, tris: 0, calls: 0, frameMs: 0, slowFrames: 0,
 	bvhTiles: 0, bvhBuildMs: 0, bvhMainMs: 0 };
 let lastInput = { throttle: 0, steer: 0, brake: 0, handbrake: false };
+// Multiplayer (src/net.js): other players' cars, drawn with the same model in another colour.
+let net = new Net( null ), carBraking = false;
+const peerMeshes = new Map();
+const PEER_COLORS = [ 0x2f7fd8, 0x35a35a, 0xf2c230, 0x8e55c9, 0x22b3b8, 0xe0619a, 0xdfe3e8, 0x8a5a2b ];
 
 function newStats() {
 
@@ -255,10 +260,26 @@ async function boot() {
 	scene.add( tiles.group );
 	if ( USE_BVH ) startBvhWorkers( 2 );
 
+	// Multiplayer needs the hosted tile proxy (the rooms live on the same Worker), so it is on
+	// only when the tileset URL is absolute; `?mp=0` turns it off, `?room=<name>` picks a
+	// private room. The mesh's timestamp folder is part of the room name: positions are in a
+	// frame derived from the tileset, so two versions of the mesh must never share a room.
+	if ( /^https?:/.test( __TILESET_URL__ ) && params.get( 'mp' ) !== '0' ) {
+
+		const clean = ( s, n ) => String( s ?? '' ).toLowerCase().replace( /[^a-z0-9-]/g, '' ).slice( 0, n );
+		const stamp = clean( String( ts.root.children?.[ 0 ]?.content?.uri ?? '' ).split( '/' )[ 0 ], 20 ) || 'mesh';
+		const room = `${clean( params.get( 'room' ), 16 ) || 'lobby'}-${stamp}`;
+		net = new Net( new URL( `/room/${room}`, __TILESET_URL__ ).href.replace( /^http/, 'ws' ) );
+		net.setName( myName );
+
+	}
+
+	buildBasemap( ts.root.boundingVolume.region );
+
 	routeIdx = Math.min( Number( params.get( 'route' ) ) || 0, Math.max( routes.length - 1, 0 ) );
 	if ( routes.length ) {
 
-		requestSpawn( routeIdx, 0 );
+		requestSpawn( routeIdx, firstSpawnAlong() );
 		state = 'loading';
 
 	} else {
@@ -271,6 +292,179 @@ async function boot() {
 	}
 
 	renderer.setAnimationLoop( tick );
+
+}
+
+// ---------- satellite basemap ----------
+// Esri World Imagery under and around the mesh, so holes and the edge of the capture show
+// the real surroundings instead of flat grey. The tiles covering the mesh (plus a margin)
+// are composited into ONE canvas texture on ONE quad: a square kilometre is small enough
+// that Web Mercator is affine to within centimetres, and one draw call beats a mesh per tile.
+// The quad is flat; trySpawn sets its height just under the road where the car lands, so
+// the mesh always draws on top of it. Loaded by the browser straight from Esri (no proxy,
+// nothing counted against the Worker). `?sat=0` turns it off.
+const SAT_URL = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_DROP = 0.3;
+let basemap = null;
+
+function buildBasemap( [ west, south, east, north ] ) {
+
+	if ( params.get( 'sat' ) === '0' ) return;
+	const dLat = SAT_MARGIN / 6371000, dLon = dLat / Math.cos( ( south + north ) / 2 );
+	const tx = ( lon, n ) => ( lon / Math.PI + 1 ) / 2 * n;
+	const ty = ( lat, n ) => ( 1 - Math.asinh( Math.tan( lat ) ) / Math.PI ) / 2 * n;
+	// the sharpest zoom whose tile grid still fits one modest texture (9 x 256 = 2304 px)
+	let z = 19, x0, x1, y0, y1;
+	for ( ; z > 10; z -- ) {
+
+		const n = 2 ** z;
+		x0 = Math.floor( tx( west - dLon, n ) ); x1 = Math.floor( tx( east + dLon, n ) );
+		y0 = Math.floor( ty( north + dLat, n ) ); y1 = Math.floor( ty( south - dLat, n ) );
+		if ( x1 - x0 < SAT_MAX_TILES && y1 - y0 < SAT_MAX_TILES ) break;
+
+	}
+
+	const n = 2 ** z, nx = x1 - x0 + 1, ny = y1 - y0 + 1;
+	const canvas = document.createElement( 'canvas' );
+	canvas.width = nx * 256; canvas.height = ny * 256;
+	const ctx = canvas.getContext( '2d' );
+	ctx.fillStyle = '#59605a'; ctx.fillRect( 0, 0, canvas.width, canvas.height );    // the dome's ground colour until tiles arrive
+	const tex = new THREE.CanvasTexture( canvas );
+	tex.colorSpace = THREE.SRGBColorSpace;
+	tex.anisotropy = Math.min( 8, renderer.capabilities.getMaxAnisotropy() );
+
+	// corners of the tile block, lon/lat -> local metres
+	const lon = x => ( x / n * 2 - 1 ) * Math.PI, lat = y => Math.atan( Math.sinh( Math.PI * ( 1 - 2 * y / n ) ) );
+	const corner = ( x, y ) => { const p = frame.toLocal( lon( x ), lat( y ) ); return [ p[ 0 ], 0, p[ 2 ] ]; };
+	const geo = new THREE.BufferGeometry();
+	geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
+		...corner( x0, y0 ), ...corner( x1 + 1, y0 ), ...corner( x0, y1 + 1 ), ...corner( x1 + 1, y1 + 1 ) ], 3 ) );    // NW NE SW SE
+	geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
+	geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
+	basemap = new THREE.Mesh( geo, new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } ) );
+	basemap.visible = false;    // until trySpawn knows the ground height
+	scene.add( basemap );
+	$( 'attrib' ).hidden = false;
+
+	// Upload the canvas at most twice a second while tiles trickle in, not once per tile.
+	let dirty = false, timer = 0;
+	const flush = () => { timer = 0; if ( dirty ) { dirty = false; tex.needsUpdate = true; } };
+	for ( let y = y0; y <= y1; y ++ ) for ( let x = x0; x <= x1; x ++ ) {
+
+		const img = new Image();
+		img.crossOrigin = 'anonymous';
+		img.onload = () => {
+
+			ctx.drawImage( img, ( x - x0 ) * 256, ( y - y0 ) * 256, 256, 256 );
+			dirty = true;
+			if ( ! timer ) timer = setTimeout( flush, 500 );
+
+		};
+		img.src = `${SAT_URL}/${z}/${y}/${x}`;    // a missing tile just stays ground-coloured
+
+	}
+
+}
+
+// ---------- name labels ----------
+// The text a player typed at the prompt, drawn above their car. It is unverified free text
+// from someone else's browser, so it only ever goes through canvas fillText - never HTML.
+function makeLabel( text ) {
+
+	const c = document.createElement( 'canvas' ), x = c.getContext( '2d' );
+	const font = '600 44px ui-sans-serif, system-ui, "Segoe UI", sans-serif';
+	x.font = font;
+	const w = Math.ceil( x.measureText( text ).width ) + 52, h = 72;
+	c.width = w; c.height = h;
+	x.fillStyle = 'rgba(13, 17, 23, .8)';
+	x.beginPath(); x.roundRect( 0, 0, w, h, h / 2 ); x.fill();
+	x.font = font; x.fillStyle = '#fff'; x.textAlign = 'center'; x.textBaseline = 'middle';
+	x.fillText( text, w / 2, h / 2 + 2 );
+	const tex = new THREE.CanvasTexture( c );
+	tex.colorSpace = THREE.SRGBColorSpace;
+	const s = new THREE.Sprite( new THREE.SpriteMaterial( { map: tex, transparent: true, depthWrite: false, fog: false } ) );
+	s.userData.aspect = w / h;
+	s.renderOrder = 3;
+	return s;
+
+}
+
+/** Give a car mesh (own or a peer's) the label `text`, replacing or removing the old one. */
+function setLabel( mesh, text ) {
+
+	if ( ( mesh.labelText ?? '' ) === text ) return;
+	if ( mesh.label ) {
+
+		scene.remove( mesh.label );
+		mesh.label.material.map.dispose(); mesh.label.material.dispose();
+		mesh.label = null;
+
+	}
+
+	mesh.labelText = text;
+	if ( text ) scene.add( mesh.label = makeLabel( text ) );
+
+}
+
+function placeLabel( mesh, pos, visible ) {
+
+	if ( ! mesh.label ) return;
+	mesh.label.visible = visible;
+	mesh.label.position.set( pos.x, pos.y + 1.75, pos.z );
+	// 0.45 m tall up close; beyond ~15 m it grows with distance so it stays readable
+	const hgt = Math.max( 0.45, camera.position.distanceTo( pos ) * 0.03 );
+	mesh.label.scale.set( hgt * mesh.label.userData.aspect, hgt, 1 );
+
+}
+
+// ---------- who is driving ----------
+// A prompt for the player's email, shown above their car to everyone in the room. Blank is
+// allowed (no label). Remembered in this browser only; the server never stores it.
+const EMAIL_KEY = 'driveMeshEmail';
+let myName = '';
+
+function askEmail() {
+
+	const apply = value => {
+
+		myName = value.trim().slice( 0, 64 );
+		try { localStorage.setItem( EMAIL_KEY, myName ); } catch { /* private window */ }
+		setLabel( carMesh, myName );
+		net.setName( myName );
+
+	};
+	// `?email=` presets it; an automated browser (the test scripts) has nobody to ask.
+	if ( params.has( 'email' ) || navigator.webdriver ) return apply( params.get( 'email' ) ?? '' );
+
+	const box = $( 'who' ), input = $( 'whoEmail' ), hint = $( 'whoHint' );
+	try { input.value = localStorage.getItem( EMAIL_KEY ) ?? ''; } catch { /* private window */ }
+	box.hidden = false;
+	input.focus();
+	box.addEventListener( 'submit', e => {
+
+		e.preventDefault();
+		const v = input.value.trim();
+		if ( v && ! /^\S+@\S+\.\S+$/.test( v ) ) {
+
+			hint.textContent = 'That does not look like an email address. Fix it, or leave it blank.';
+			hint.classList.add( 'warn' );
+			return;
+
+		}
+
+		apply( v );
+		box.hidden = true;
+		input.blur();
+
+	} );
+
+}
+
+// With multiplayer on, start a random distance up the route so players who arrive together
+// are not stacked inside each other at the route's first point.
+function firstSpawnAlong() {
+
+	return net.status === 'off' ? 0 : Math.random() * Math.min( 60, ( routes[ routeIdx ]?.length ?? 0 ) / 3 );
 
 }
 
@@ -371,7 +565,7 @@ function stepScan() {
 	scan = null;
 	hudLast.routesFor = - 1;    // re-stroke the minimap with the new routes
 	routeIdx = Math.min( routeIdx, routes.length - 1 );
-	requestSpawn( routeIdx, 0 );
+	requestSpawn( routeIdx, firstSpawnAlong() );
 	state = 'loading';
 
 }
@@ -653,6 +847,13 @@ function trySpawn() {
 
 	spawnLog.push( { t: Math.round( performance.now() ), x: s.x, z: s.z, y: hit.point.y, along: s.along,
 		closeFor: Math.round( closeFor ), settled, shown: tiles.stats.visible } );
+	if ( basemap ) {
+
+		basemap.position.y = hit.point.y - SAT_DROP;
+		basemap.visible = true;
+
+	}
+
 	car.reset( new THREE.Vector3( s.x, hit.point.y + CAR.wheelRadius + CAR.restLength + 0.3, s.z ), s.yaw );
 	camera.position.copy( car.pos ).addScaledVector( car.fwd, - 8 ).add( new THREE.Vector3( 0, 3, 0 ) );
 	spawnPending = null;
@@ -663,7 +864,7 @@ function trySpawn() {
 // ---------- input ----------
 addEventListener( 'keydown', e => {
 
-	if ( e.repeat ) return;
+	if ( e.repeat || e.target instanceof HTMLInputElement ) return;    // typing in the email prompt is not driving
 	keys.add( e.code );
 	if ( e.code === 'KeyR' ) resetToRoute();
 	if ( e.code === 'KeyN' && routes.length ) {
@@ -799,6 +1000,8 @@ function tick() {
 	}
 
 	syncCarMesh( dt );
+	if ( state === 'driving' ) net.send( car, carBraking, now );
+	syncPeerMeshes( dt, now );
 	syncVoidFloor( dt );
 	const t2 = performance.now();
 	renderer.render( scene, camera );
@@ -933,13 +1136,13 @@ function updateCamera( dt ) {
 }
 
 // ---------- car visuals ----------
-function buildCarMesh() {
+function buildCarMesh( color = 0xe4572e ) {
 
 	// Purely cosmetic: the physics body is the box in CAR.size and the wheel positions in
 	// CAR.wheels; nothing here is raycast. Geometry is merged per material to keep the car at
 	// a dozen draw calls.
 	const root = new THREE.Group();
-	const paint = new THREE.MeshStandardMaterial( { color: 0xe4572e, roughness: 0.32, metalness: 0.35 } );
+	const paint = new THREE.MeshStandardMaterial( { color, roughness: 0.32, metalness: 0.35 } );
 	const dark = new THREE.MeshStandardMaterial( { color: 0x15171b, roughness: 0.85 } );
 	const glass = new THREE.MeshStandardMaterial( { color: 0x0f1820, roughness: 0.08, metalness: 0.85 } );
 	const alloy = new THREE.MeshStandardMaterial( { color: 0xc9ced6, roughness: 0.3, metalness: 0.9 } );
@@ -1016,6 +1219,7 @@ function syncCarMesh( dt ) {
 
 	const driving = state === 'driving';
 	carMesh.root.visible = carMesh.shadow.visible = driving;
+	placeLabel( carMesh, car.pos, driving );
 	if ( ! driving ) return;
 	carMesh.root.position.copy( car.pos );
 	carMesh.root.quaternion.copy( car.quat );
@@ -1032,7 +1236,7 @@ function syncCarMesh( dt ) {
 
 	}
 
-	const braking = lastInput.handbrake || lastInput.brake > 0 ||
+	const braking = carBraking = lastInput.handbrake || lastInput.brake > 0 ||
 		( lastInput.throttle < 0 && car.speed > 0.5 ) || ( lastInput.throttle > 0 && car.speed < - 0.5 );
 	carMesh.tail.emissiveIntensity = braking ? 3.2 : 0.5;
 
@@ -1040,6 +1244,59 @@ function syncCarMesh( dt ) {
 	sh.position.copy( car.pos ).addScaledVector( car.up, 0.04 - drop / car.wheels.length );
 	sh.quaternion.copy( car.quat );
 	sh.material.opacity += ( 0.1 + 0.42 * contacts / 4 - sh.material.opacity ) * Math.min( 1, dt * 8 );
+
+}
+
+// Other players. Only the pose travels over the network, so their wheels sit at rest length
+// (no suspension travel) and spin at the speed they report.
+const _peerUp = new THREE.Vector3();
+let peerPoses = [];
+function syncPeerMeshes( dt, now ) {
+
+	peerPoses = net.sample( now );
+	const live = new Set();
+	for ( const p of peerPoses ) {
+
+		live.add( p.id );
+		let m = peerMeshes.get( p.id );
+		if ( ! m ) {
+
+			m = buildCarMesh( PEER_COLORS[ ( p.id - 1 ) % PEER_COLORS.length ] );
+			m.root.visible = m.shadow.visible = true;    // buildCarMesh makes both hidden
+			m.shadow.material.opacity = 0.4;
+			scene.add( m.root, m.shadow );
+			peerMeshes.set( p.id, m );
+
+		}
+
+		m.root.position.copy( p.pos );
+		m.root.quaternion.copy( p.quat );
+		m.spin -= p.speed * dt / CAR.wheelRadius;
+		CAR.wheels.forEach( ( w, i ) => {
+
+			m.wheels[ i ].position.set( w.x + Math.sign( w.x ) * 0.04, w.y - CAR.restLength, w.z );
+			m.wheels[ i ].rotation.set( m.spin, w.front ? p.steer : 0, 0 );
+
+		} );
+		m.tail.emissiveIntensity = p.braking ? 3.2 : 0.5;
+		_peerUp.set( 0, 1, 0 ).applyQuaternion( p.quat );
+		m.shadow.position.copy( p.pos ).addScaledVector( _peerUp, 0.04 - ( CAR.restLength - CAR.wheels[ 0 ].y + CAR.wheelRadius ) );
+		m.shadow.quaternion.copy( p.quat );
+		setLabel( m, p.name );
+		placeLabel( m, p.pos, true );
+
+	}
+
+	for ( const [ id, m ] of peerMeshes ) {
+
+		if ( live.has( id ) ) continue;
+		setLabel( m, '' );
+		scene.remove( m.root, m.shadow );
+		m.root.traverse( o => { o.geometry?.dispose(); o.material?.dispose?.(); } );
+		m.shadow.geometry.dispose(); m.shadow.material.map.dispose(); m.shadow.material.dispose();
+		peerMeshes.delete( id );
+
+	}
 
 }
 
@@ -1094,6 +1351,7 @@ function drawHud() {
 	setText( 'status',
 		`route ${routeIdx + 1}/${routes.length} · ${( routes[ routeIdx ]?.length ?? 0 ).toFixed( 0 )} m` +
 		`<br>tiles ${t.visible ?? '–'} shown · ${loading} loading · ${Math.round( fps )} fps` +
+		( net.status === 'online' ? `<br>${peerPoses.length + 1} online` : net.status === 'full' ? '<br>room full · driving solo' : '' ) +
 		( auto.on ? `<br><b>autopilot</b> ${( stats.routeProgress * 100 ).toFixed( 0 )}%` : '' ) +
 		( off && state === 'driving' ? `<br><span class="warn">${off}/4 wheels off mesh</span>` : '' ), true );
 
@@ -1124,8 +1382,16 @@ function drawHud() {
 	mctx.setTransform( 1, 0, 0, 1, 0, 0 );
 	mctx.clearRect( 0, 0, mini.width, mini.height );
 	mctx.drawImage( miniRoutes, 0, 0 );
-	if ( state !== 'driving' ) return;
 	mctx.setTransform( MINI_DPR, 0, 0, MINI_DPR, 0, 0 );
+	for ( const p of peerPoses ) {
+
+		mctx.beginPath(); mctx.arc( mx( p.pos.x ), mz( p.pos.z ), 3.5, 0, 2 * Math.PI );
+		mctx.fillStyle = '#' + PEER_COLORS[ ( p.id - 1 ) % PEER_COLORS.length ].toString( 16 ).padStart( 6, '0' );
+		mctx.strokeStyle = '#fff'; mctx.lineWidth = 1; mctx.fill(); mctx.stroke();
+
+	}
+
+	if ( state !== 'driving' ) return;
 	mctx.translate( mx( car.pos.x ), mz( car.pos.z ) );
 	mctx.rotate( Math.atan2( car.fwd.x, - car.fwd.z ) );
 	mctx.beginPath(); mctx.moveTo( 0, - 7 ); mctx.lineTo( 4.5, 5 ); mctx.lineTo( - 4.5, 5 ); mctx.closePath();
@@ -1149,6 +1415,13 @@ function perfReport() {
 
 // ---------- debug / test hooks ----------
 window.__game = {
+	/** multiplayer: connection status, own id, and where each peer is drawn right now */
+	get net() {
+
+		return { status: net.status, id: net.id, url: net.url,
+			name: myName, peers: peerPoses.map( p => ( { id: p.id, name: p.name, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
+
+	},
 	get state() {
 
 		return state;
@@ -1288,3 +1561,6 @@ window.__game.debug = () => {
 	};
 
 };
+
+// Last, once every module-level binding above exists: ask who is driving (the mesh loads meanwhile).
+askEmail();

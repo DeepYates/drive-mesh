@@ -9,7 +9,17 @@
 // from embedding the tiles; it does not stop a script that fakes the header, so treat
 // whatever this proxy serves as public.
 
-const ROOT_TTL = 600;        // root tileset.json: re-fetched after 10 minutes, as in server.py
+//
+//   GET /room/<name>   ->  WebSocket to the multiplayer room of that name (room.js)
+//
+// Cost: this runs on the Workers Free plan, which never bills - at a daily limit requests
+// fail until 00:00 UTC. The limits here keep one visitor from using up that allowance:
+// MULTIPLAYER ("off" disables rooms), the room-name whitelist, and two optional per-IP rate
+// limiters (LIMIT_TILES, LIMIT_ROOMS in wrangler.toml; approximate, counted per location).
+import { Room } from './room.js';
+export { Room };
+
+const ROOT_TTL = 600;       // root tileset.json: re-fetched after 10 minutes, as in server.py
 const TILE_TTL = 86400;      // everything else lives under a timestamped directory: immutable
 const TYPES = { json: 'application/json', glb: 'model/gltf-binary' };
 
@@ -36,7 +46,21 @@ export default {
 		if ( request.method !== 'GET' && request.method !== 'HEAD' ) return text( 405, 'method not allowed', cors );
 
 		const { pathname, origin: self } = new URL( request.url );
+		const ip = request.headers.get( 'CF-Connecting-IP' ) || 'unknown';
+
+		if ( pathname.startsWith( '/room/' ) ) {
+
+			if ( ( env.MULTIPLAYER || 'on' ) !== 'on' || ! env.ROOMS ) return text( 503, 'multiplayer is off', cors );
+			const name = pathname.slice( '/room/'.length );
+			if ( ! /^[a-z0-9-]{1,40}$/.test( name ) ) return text( 400, 'bad room name', cors );
+			if ( request.headers.get( 'Upgrade' ) !== 'websocket' ) return text( 426, 'expected a websocket', cors );
+			if ( ! await allow( env.LIMIT_ROOMS, ip ) ) return text( 429, 'too many connections', cors );
+			return env.ROOMS.get( env.ROOMS.idFromName( name ) ).fetch( request );
+
+		}
+
 		if ( ! pathname.startsWith( '/tiles/' ) ) return text( 404, 'not found', cors );
+		if ( ! await allow( env.LIMIT_TILES, ip ) ) return text( 429, 'too many requests', { ...cors, 'Retry-After': '10' } );
 		const rel = pathname.slice( '/tiles/'.length );
 		// Tile paths are plain segments (20261111T211504Z/cell/0/1/2/L3/4_5.glb); refuse
 		// anything else rather than forward it upstream.
@@ -85,6 +109,23 @@ export default {
 	},
 
 };
+
+// Per-IP rate limit. The binding is optional and best-effort: a missing or failing limiter
+// lets the request through (the daily cap is still the hard stop).
+async function allow( limiter, key ) {
+
+	if ( ! limiter ) return true;
+	try {
+
+		return ( await limiter.limit( { key } ) ).success;
+
+	} catch {
+
+		return true;
+
+	}
+
+}
 
 function text( status, message, headers = {} ) {
 

@@ -36,6 +36,20 @@
   #overlay.hidden::before, #overlay.failed::before { animation: none; }
   #overlay.failed::before { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  #who { left: 50%; top: 24%; transform: translateX(-50%); width: min(380px, calc(100vw - 64px)); z-index: 2;
+    background: rgba(13, 17, 23, .94); padding: 18px 20px; }
+  #who[hidden], #attrib[hidden] { display: none; }
+  #who label { display: block; font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  #who .row { display: flex; gap: 8px; }
+  #who input { flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .08); color: #fff; }
+  #who input:focus-visible { outline: 2px solid #ffd166; outline-offset: 1px; }
+  #who button { font: inherit; font-weight: 700; padding: 8px 16px; border: 0; border-radius: 8px;
+    background: #ffd166; color: #14181d; cursor: pointer; }
+  #whoHint { margin: 10px 0 0; opacity: .75; }
+  #whoHint.warn { opacity: 1; }
+  #attrib { position: fixed; left: 50%; bottom: 6px; transform: translateX(-50%); font-size: 11px;
+    color: rgba(255, 255, 255, .8); text-shadow: 0 1px 2px rgba(0, 0, 0, .7); pointer-events: none; white-space: nowrap; }
   @media (max-width: 760px) { #help { display: none; } }
 </style>
 </head>
@@ -54,6 +68,15 @@
   <div><b>P</b> autopilot</div>
 </div>
 <div id="overlay"><span id="overlayText">Starting…</span></div>
+<form id="who" class="panel" hidden>
+  <label for="whoEmail">Your email</label>
+  <div class="row">
+    <input id="whoEmail" type="text" inputmode="email" autocomplete="email" maxlength="64" placeholder="you@example.com">
+    <button type="submit">Drive</button>
+  </div>
+  <p id="whoHint">Shown above your car to everyone driving here. Leave it blank to drive without one.</p>
+</form>
+<div id="attrib" hidden>Imagery © Esri, Maxar, Earthstar Geographics</div>
 <script type="module" src="./bundle.js"></script>
 </body>
 </html>

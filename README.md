@@ -94,6 +94,56 @@ Secrets and variables → Actions → Variables → `TILESET_URL` =
   custom domain or a different GitHub account means editing it and redeploying.
 - The Worker hides the key, not the data: anything it serves is effectively public.
 
+## Multiplayer
+
+Players on the hosted build see each other drive (cars pass through each other). Each browser
+simulates its own car and sends its pose; a Durable Object per room (`worker/src/room.js`)
+relays it. `src/net.js` draws the others ~150 ms in the past, interpolated between real poses.
+
+- Room = `?room=<name>` (default `lobby`) plus the mesh's timestamp folder, so two versions of
+  the mesh never share a room. `?mp=0` turns multiplayer off. It is off under plain
+  `server.py` (the rooms live on the Worker).
+- **Email label:** the page asks for an email and shows it above the car to everyone in the
+  room. It is unverified free text: capped at 64 characters, stripped of control characters,
+  drawn as canvas text (never HTML), kept in the browser's localStorage and the live socket
+  only — the server stores nothing. Blank is allowed. `?email=` presets it.
+- Any failure (room full, daily allowance used up, connection lost) falls back to
+  single-player without an error.
+
+## Cost controls
+
+**Keep the Cloudflare account on the Workers Free plan.** Free never bills: at a daily limit
+(100,000 Worker requests; Durable Objects 100,000 requests + 13,000 GB-s) requests fail until
+00:00 UTC. Workers Paid has no spending cap. GitHub Pages and the satellite imagery cost
+nothing here. The limits below stop one visitor using up the day's allowance:
+
+| Control | Where |
+|---|---|
+| `MULTIPLAYER = "off"` switch, `MAX_PLAYERS` (8) per room | `worker/wrangler.toml` |
+| Only the Pages origin may use tiles or rooms | `ALLOWED_ORIGINS` |
+| Room names limited to `[a-z0-9-]{1,40}` | `worker/src/index.js` |
+| Per-IP rate limits: 1,500 tile requests/min, 40 room connections/min (approximate) | `[[ratelimits]]` |
+| Per-socket 15 messages/s; a flood is closed; fixed message size | `worker/src/room.js` |
+| Sockets silent for 5 min are dropped; empty rooms hibernate | `worker/src/room.js` |
+| Page sends 10 poses/s while moving, 1 per 2 s parked, none from a hidden tab | `src/net.js` |
+
+Budget: about 1,800 billed requests per player-hour of driving, so ~55 player-hours a day;
+a fresh visitor is a few hundred tile requests, then their browser caches tiles for a day.
+
+`node test/multi.mjs` (two browsers, one drives, the other must see it) and
+`node test/limits.mjs [worker url] [origin] [--idle=<s>]` (abuse checks) run against
+`npx wrangler dev` in `worker/` with a `.dev.vars` holding `TILESET_URL`, `ALLOWED_ORIGINS`
+(and `IDLE_SECONDS` for `--idle`), and a build made with
+`TILESET_URL=http://127.0.0.1:8787/tiles/tileset.json`.
+
+## Satellite basemap
+
+Esri World Imagery under and around the mesh (`buildBasemap` in `src/main.js`): the tiles
+covering the mesh plus a 250 m margin are composited into one texture on one flat quad, set
+just below the road where the car spawns. Loaded by the browser straight from Esri, with the
+attribution shown at the bottom of the page. `?sat=0` turns it off. The quad is flat, so on
+hilly captures it will sit above or below the mesh away from the spawn point.
+
 ## Not done
 
-No multiplayer, no sound, no gameplay loop.
+No collisions between players, no sound, no gameplay loop.
