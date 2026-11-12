@@ -346,6 +346,7 @@ async function boot() {
 
 	}
 
+	await checkUnlimited();
 	watchTileBudget();
 	wireBar();
 
@@ -649,9 +650,47 @@ function nudge( kind, message ) {
 const BUDGET_KEY = 'driveMeshTiles';
 const budget = { day: new Date().toISOString().slice( 0, 10 ), n: 0 };
 
+// The owner's way round the limit: opening the site once with ?unlimited=<code> switches the
+// limit off in that browser until the code is changed. Only the code's SHA-256 is published
+// (meshes.json: site.unlimitedHash; the code itself is in the git-ignored
+// bypass_code.local.txt), and the parameter is removed from the address at once so it does
+// not travel in a copied or "Invite" link. ?unlimited=off puts the limit back. Tiles still
+// count against the Worker's daily allowance - this only stops the page limiting itself.
+const UNLIMITED_KEY = 'driveMeshUnlimited';
+let unlimited = false;
+
+async function checkUnlimited() {
+
+	const code = params.get( 'unlimited' );
+	try {
+
+		if ( code === 'off' ) localStorage.removeItem( UNLIMITED_KEY );
+		else if ( code && site.unlimitedHash ) {
+
+			const bytes = new Uint8Array( await crypto.subtle.digest( 'SHA-256', new TextEncoder().encode( code ) ) );
+			const hex = [ ...bytes ].map( b => b.toString( 16 ).padStart( 2, '0' ) ).join( '' );
+			if ( hex === site.unlimitedHash ) localStorage.setItem( UNLIMITED_KEY, hex );
+
+		}
+
+		// the stored value is the hash it matched: publishing a new hash revokes every old link
+		unlimited = !! site.unlimitedHash && localStorage.getItem( UNLIMITED_KEY ) === site.unlimitedHash;
+
+	} catch { unlimited = false; }
+
+	if ( code !== null ) {
+
+		const u = new URL( location.href );
+		u.searchParams.delete( 'unlimited' );
+		history.replaceState( null, '', u );
+
+	}
+
+}
+
 function watchTileBudget() {
 
-	const soft = site.tileBudget || 3200, hard = site.tileHardStop || 4000;
+	const soft = unlimited ? Infinity : site.tileBudget || 3200, hard = unlimited ? Infinity : site.tileHardStop || 4000;
 	try { const b = JSON.parse( localStorage.getItem( BUDGET_KEY ) ); if ( b?.day === budget.day ) budget.n = b.n; } catch { /* private window */ }
 	const apply = () => {
 
@@ -1636,6 +1675,7 @@ function drawHud() {
 		// a phone's HUD is small: the route and streaming numbers are left out there
 		( touch ? '' : `route ${routeIdx + 1}/${routes.length} · ${( routes[ routeIdx ]?.length ?? 0 ).toFixed( 0 )} m` +
 		`<br>tiles ${t.visible ?? '–'} shown · ${loading} loading · ${Math.round( fps )} fps` ) +
+		( unlimited && ! touch ? '<br>no tile limit' : '' ) +
 		( net.status === 'online' ? `${touch ? '' : '<br>'}${peerPoses.length + 1} online` : net.status === 'full' ? '<br>room full · driving solo' : '' ) +
 		( auto.on ? `<br><b>autopilot</b> ${( stats.routeProgress * 100 ).toFixed( 0 )}%` : '' ) +
 		( off && state === 'driving' ? `<br><span class="warn">${off}/4 wheels off mesh</span>` : '' ), true );
@@ -1747,7 +1787,7 @@ window.__game = {
 	get net() {
 
 		return { status: net.status, id: net.id, url: net.url,
-			name: myName, car: myCar, sceneUrl: document.getElementById( 'arcgis' ).hidden ? '' : document.getElementById( 'arcgis' ).href, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
+			name: myName, unlimited, car: myCar, sceneUrl: document.getElementById( 'arcgis' ).hidden ? '' : document.getElementById( 'arcgis' ).href, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
 
 	},
 	get state() {

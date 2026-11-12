@@ -249,6 +249,28 @@ try {
 	await hp.touchscreen.touchEnd();
 	check( fast > Math.max( 3, x0 ), 'H: holding the gas button accelerates the car', `${x0.toFixed( 1 )} -> ${fast.toFixed( 1 )} m/s` );
 	check( herr.length === 0, 'H: no page errors', herr.join( ' | ' ).slice( 0, 200 ) );
+
+	// ----- K. the owner's bypass link: with the right code the page stops limiting itself
+	const sha = async s => [ ...new Uint8Array( await crypto.subtle.digest( 'SHA-256', new TextEncoder().encode( s ) ) ) ].map( b => b.toString( 16 ).padStart( 2, '0' ) ).join( '' );
+	const hash = await sha( 'right-code' );
+	for ( const [ code, expectUnlimited ] of [ [ 'wrong-code', false ], [ 'right-code', true ] ] ) {
+
+		const kp = await ( await phone.createBrowserContext() ).newPage();
+		await kp.setViewport( { width: 1280, height: 720 } );
+		await kp.setRequestInterception( true );
+		kp.on( 'request', req => { if ( ! req.url().endsWith( '/meshes.json' ) ) return req.continue(); const cfg = JSON.parse( readFileSync( join( here, '..', 'static', 'meshes.json' ), 'utf8' ) ); Object.assign( cfg.site, { tileBudget: 40, tileHardStop: 90, unlimitedHash: hash } ); req.respond( { status: 200, contentType: 'application/json', body: JSON.stringify( cfg ) } ); } );
+		await kp.goto( `${SITE}?mp=0&unlimited=${code}`, { waitUntil: 'load' } );
+		const kg = expr => kp.evaluate( `(() => { const g = window.__game; return ${expr}; })()` );
+		for ( let i = 0; i < 360 && await kg( 'g && g.state' ) !== 'driving'; i ++ ) await sleep( 250 );
+		await kp.keyboard.down( 'KeyW' ); await sleep( 14000 ); await kp.keyboard.up( 'KeyW' ); await sleep( 4000 );
+		const k = await kg( '({ unlimited: g.net.unlimited, n: g.net.tileBudget.n, error: g.debug().errorTarget, nudge: ! document.getElementById( "nudge" ).hidden, inUrl: location.search.includes( "unlimited" ) })' );
+		if ( expectUnlimited ) check( k.unlimited && k.n > 150 && k.error < 40 && ! k.nudge, 'K: the right code lifts the limit (kept loading at full detail well past the hard stop of 90)', JSON.stringify( k ) );
+		else check( ! k.unlimited && k.n <= 125 && k.nudge, 'K: a wrong code changes nothing (stopped at the limit as usual)', JSON.stringify( k ) );
+		check( ! k.inUrl, `K: the code is removed from the address (${code})` );
+		await kp.close();
+
+	}
+
 	await phone.close();
 
 } catch ( err ) {

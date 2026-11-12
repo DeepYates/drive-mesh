@@ -12,7 +12,8 @@
     },
     "errorTarget": 10,
     "tileBudget": 3200,
-    "tileHardStop": 4000
+    "tileHardStop": 4000,
+    "unlimitedHash": "11125cdd6623445c7316126ff0ab306a9fc96ca1aeb6db5183d03430b849a356"
   },
   "meshes": [
     {

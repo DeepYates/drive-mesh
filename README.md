@@ -135,6 +135,13 @@ The site is sized for **25 new visitors a day** (`DAILY_USERS` in `worker/wrangl
   browser's cache (kept 30 days) are not counted. **25 visitors x 4,000 tiles is the whole
   daily allowance**: 4,000 is enough for every route of about three meshes like this one.
   Visitors x tiles must stay at or under 100,000 on the free plan.
+- **Bypass for the owner:** opening the site once with `?unlimited=<code>` switches the tile
+  limit off in that browser (the HUD shows "no tile limit") until the code changes;
+  `?unlimited=off` puts it back. The code is in the git-ignored `bypass_code.local.txt`;
+  only its SHA-256 is published (`site.unlimitedHash`). To revoke every link, delete that
+  file, generate a new code and hash, and push. The parameter is stripped from the address
+  immediately. It lifts only the page's own limit: the tiles still count against the daily
+  allowance, and the daily visitor cap still applies.
 - **Limits against abuse:** only the Pages origin may call the Worker; per-IP rate limits
   (tiles 5,000/min, about five cars at speed behind one address; rooms 40/min; forms 20/min; approximate); rooms hold 8 players, accept
   15 messages/s per socket, drop sockets silent for 5 min, and hibernate when quiet;

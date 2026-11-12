@@ -12,7 +12,8 @@ test/out/
 # contain the DeepWalk API key
 tileset_url.local.txt
 tilesets.local.json
-# the /stats key, kept locally for the site owner
+# the /stats key and the tile-limit bypass code, kept locally for the site owner
 stats_key.local.txt
+bypass_code.local.txt
 worker/.dev.vars
 worker/.wrangler/
