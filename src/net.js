@@ -9,7 +9,8 @@ import { Quaternion, Vector3 } from 'three';
 const SEND_MS = 100;         // 10 poses a second while the car is moving
 const IDLE_SEND_MS = 2000;   // a parked car still says where it is, for players who join later
 const DELAY_MS = 150;        // peers are drawn this far in the past, between two real poses
-const STALE_MS = 6000;       // a peer that has gone quiet (hidden tab, lost link) is not drawn
+const STALE_MS = 10000;      // a peer that has gone quiet (hidden tab, lost link) is not drawn. A parked car
+                             // reports every 2 s, so this rides out several missed or late updates.
 const MAX_FAILS = 3;         // consecutive failed connections before giving up for this page load
 const DEAF_MS = 90000;       // sending but hearing nothing for this long = a dead connection: reconnect
 const FLOATS = 10;           // pos xyz, quat xyzw, speed, steer, braking

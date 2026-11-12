@@ -50,18 +50,25 @@ const check = ( ok, label, detail = '' ) => { console.log( ok ? 'PASS' : 'FAIL',
 try {
 
 	await until( 'both driving', async () => await a.g( 'g && g.state' ) === 'driving' && await b.g( 'g && g.state' ) === 'driving' );
+	// The game lets you drive while the mesh is still streaming in. This test is about positions
+	// agreeing, not latency under load (two GPU-heavy browsers share this machine), so let both
+	// finish loading and the cars finish rolling to rest first.
+	const quiet = async p => { const t = await p.g( 'g.tiles' ); return t.downloading + t.parsing + t.queued === 0 && Math.abs( ( await p.g( 'g.car' ) ).speed ) < 0.15; };
+	await until( 'both loaded and at rest', async () => await quiet( a ) && await quiet( b ), 60000 ).catch( () => {} );
 	await until( 'both see one peer', async () => ( await a.g( 'g.net.peers.length' ) ) === 1 && ( await b.g( 'g.net.peers.length' ) ) === 1, 20000 );
 	const na = await a.g( 'g.net' ), nb = await b.g( 'g.net' );
 	check( na.status === 'online' && nb.status === 'online' && na.id !== nb.id, 'both online with different ids', `A=${na.id} B=${nb.id} room=${na.url}` );
 
 	await until( 'names to arrive', async () => ( await a.g( 'g.net.peers[0].name' ) ) === 'Driver B' && ( await b.g( 'g.net.peers[0].name' ) ) === 'Driver A', 10000 );
 	check( true, 'each sees the other player name label' );
-	await until( 'car models to load', async () => { const p = ( await b.g( 'g.net.peers' ) )[ 0 ]; return p.car === 'truck' && p.carLoaded && ( await a.g( 'g.net.peers' ) )[ 0 ].car === 'suv' && ( await a.g( 'g.net.carLoaded' ) ); }, 20000 );
+	await until( 'car models to load', async () => { const p = ( await b.g( 'g.net.peers' ) )[ 0 ], q = ( await a.g( 'g.net.peers' ) )[ 0 ]; return p?.car === 'truck' && p.carLoaded && q?.car === 'suv' && q.carLoaded; }, 20000 );
 	check( true, 'each sees the other player chosen car model (A: pickup, B: SUV)' );
 	await sleep( 1500 );
 	await a.page.screenshot( { path: join( out, 'multi_A_view.png' ) } );
 	await b.page.screenshot( { path: join( out, 'multi_B_view.png' ) } );
 
+	await until( 'B to have a fresh view of A', async () => ( await b.g( 'g.net.peers.length' ) ) === 1, 15000 );
+	await sleep( 2500 );    // a parked car reports every 2 s
 	const own0 = await a.g( 'g.car' ), seen0 = ( await b.g( 'g.net.peers' ) )[ 0 ];
 	check( Math.hypot( own0.x - seen0.x, own0.z - seen0.z ) < 1, 'B sees A where A is (parked)', `${Math.hypot( own0.x - seen0.x, own0.z - seen0.z ).toFixed( 2 )} m apart` );
 
