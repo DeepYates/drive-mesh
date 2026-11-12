@@ -46,6 +46,25 @@ async function shoot( mesh, width, height, file, caption ) {
 
 }
 
+// each mesh's routes, surveyed once here so visitors skip the survey (see main.js "remembered routes")
+mkdirSync( join( root, 'routes' ), { recursive: true } );
+for ( const mesh of meshes ) {
+
+	const page = await browser.newPage();
+	await page.goto( `${BASE}?mesh=${mesh.id}&mp=0&sat=0&rescan=1`, { waitUntil: 'load' } );
+	for ( let i = 0; i < 480 && await page.evaluate( () => window.__game?.state ) !== 'driving'; i ++ ) await sleep( 250 );
+	const found = await page.evaluate( () => window.__game.exportRoutes() );
+	if ( found.routes.length && ! mesh.routes ) {
+
+		writeFileSync( join( root, 'routes', `${mesh.id}.json` ), JSON.stringify( found ) );
+		console.log( 'wrote', `routes/${mesh.id}.json`, `(${found.routes.length} routes, mesh ${found.stamp})`, mesh.routeCache ? '' : '- set "routeCache": true for this mesh in meshes.json' );
+
+	}
+
+	await page.close();
+
+}
+
 // the car picker's pictures: studio shots rendered by the game itself (window.__game.carShot)
 {
 

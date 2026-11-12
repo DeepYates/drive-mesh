@@ -167,6 +167,53 @@ function newStats() {
 
 }
 
+// ---------- tile decoders ----------
+// Created (and their wasm fetched and compiled) as soon as the page loads, not when the
+// first tile arrives: a visitor on the start screen is not waiting for them later.
+const dracoLoader = new DRACOLoader().setDecoderPath( asset( './libs/draco/' ) );
+dracoLoader.preload();
+const ktxLoader = new KTX2Loader().setTranscoderPath( asset( './libs/basis/' ) ).detectSupport( renderer );
+ktxLoader.init();
+
+// A tile's textures are KTX2 images embedded in the .glb. GLTFLoader's own path wraps each
+// one in a Blob, makes an object URL for it and fetches that URL back before the transcoder
+// sees it - about 7% of main-thread time while driving, plus the garbage. This replaces the
+// loader's KHR_texture_basisu handler (same name, so it takes its place) and hands the
+// embedded bytes straight to the transcoder. Images that are not embedded use the stock path.
+const GL_FILTER = { 9728: THREE.NearestFilter, 9729: THREE.LinearFilter, 9984: THREE.NearestMipmapNearestFilter,
+	9985: THREE.LinearMipmapNearestFilter, 9986: THREE.NearestMipmapLinearFilter, 9987: THREE.LinearMipmapLinearFilter };
+const GL_WRAP = { 33071: THREE.ClampToEdgeWrapping, 33648: THREE.MirroredRepeatWrapping, 10497: THREE.RepeatWrapping };
+const directBasisTextures = parser => ( {
+	name: 'KHR_texture_basisu',
+	loadTexture( textureIndex ) {
+
+		const json = parser.json, def = json.textures[ textureIndex ], ext = def.extensions?.KHR_texture_basisu;
+		const loader = parser.options.ktx2Loader;
+		if ( ! ext || ! loader ) return null;
+		const source = json.images[ ext.source ];
+		if ( source.bufferView === undefined ) return parser.loadTextureImage( textureIndex, ext.source, loader );
+		const key = `${source.bufferView}:${def.sampler}`;
+		return parser.textureCache[ key ] ??= parser.getDependency( 'bufferView', source.bufferView )
+			.then( bytes => new Promise( ( resolve, reject ) => loader.parse( bytes, resolve, reject ) ) )
+			.then( texture => {
+
+				const sampler = ( json.samplers || {} )[ def.sampler ] || {};
+				texture.flipY = false;
+				texture.name = def.name || source.name || '';
+				texture.magFilter = GL_FILTER[ sampler.magFilter ] || THREE.LinearFilter;
+				// a compressed texture cannot generate mipmaps: keep the transcoder's choice unless the file says otherwise
+				if ( GL_FILTER[ sampler.minFilter ] && texture.mipmaps.length > 1 ) texture.minFilter = GL_FILTER[ sampler.minFilter ];
+				texture.wrapS = GL_WRAP[ sampler.wrapS ] || THREE.RepeatWrapping;
+				texture.wrapT = GL_WRAP[ sampler.wrapT ] || THREE.RepeatWrapping;
+				parser.associations.set( texture, { textures: textureIndex } );
+				return texture;
+
+			} )
+			.catch( () => null );
+
+	},
+} );
+
 // ---------- boot ----------
 
 function fail( err ) {
@@ -220,12 +267,7 @@ async function boot() {
 
 
 	tiles = new TilesRenderer( TILESET );
-	const dracoLoader = new DRACOLoader().setDecoderPath( asset( './libs/draco/' ) );
-	dracoLoader.preload();    // fetch + compile the decoder now, not when the first tile arrives
-	tiles.registerPlugin( new GLTFExtensionsPlugin( {
-		dracoLoader,
-		ktxLoader: new KTX2Loader().setTranscoderPath( asset( './libs/basis/' ) ).detectSupport( renderer ),
-	} ) );
+	tiles.registerPlugin( new GLTFExtensionsPlugin( { dracoLoader, ktxLoader, plugins: [ directBasisTextures ] } ) );
 	// Screen-space error in pixels: lower = sharper and more tiles. Phones get a coarser
 	// mesh (smaller screens, mobile data); `?error=` overrides both.
 	tiles.errorTarget = Number( params.get( 'error' ) ) || ( site.errorTarget || 10 ) * ( touch ? 1.6 : 1 );
@@ -247,6 +289,12 @@ async function boot() {
 				map.needsUpdate = true;
 
 			}
+
+			// Upload the texture now, as this tile arrives. Left to the renderer it is uploaded
+			// on the first frame the tile is drawn - and tiles are switched visible in batches,
+			// so dozens of uploads would land in one frame (a 0.9 s freeze at spawn, and the
+			// stutter each time a batch swaps in while driving).
+			if ( map ) renderer.initTexture( map );
 
 			if ( USE_BVH ) bvhJobs.add( { mesh: o, model, state: 'waiting', centre: null, radius: 0, dist: 0 } );
 
@@ -270,6 +318,20 @@ async function boot() {
 	scene.add( tiles.group );
 	if ( USE_BVH ) startBvhWorkers( 2 );
 
+	// Routes found by surveying the mesh are remembered, so the survey (several seconds, and
+	// an overview's worth of tiles) runs once per mesh version, not once per visit: first a
+	// file shipped with the site (routes/<id>.json, written by test/thumbs.mjs), then this
+	// browser's own copy. Both carry the mesh's timestamp folder and are ignored if it changed.
+	meshStamp = String( ts.root.children?.[ 0 ]?.content?.uri ?? '' ).split( '/' )[ 0 ] || 'mesh';
+	if ( ! routes.length && ! params.has( 'rescan' ) ) {
+
+		let saved = null;
+		if ( mesh.routeCache ) saved = await fetch( asset( `./routes/${mesh.id}.json` ) ).then( r => r.ok ? r.json() : null ).catch( () => null );
+		if ( saved?.stamp !== meshStamp ) try { saved = JSON.parse( localStorage.getItem( `driveMeshRoutes:${mesh.id}` ) ); } catch { saved = null; }
+		if ( saved?.stamp === meshStamp ) routes = importRoutes( saved );
+
+	}
+
 	// Multiplayer needs the Worker (the rooms live there), so it is on only for a hosted
 	// build; `?mp=0` turns it off, `?room=<name>` picks a private room. The mesh id and its
 	// timestamp folder are part of the room name: positions are in a frame derived from the
@@ -277,7 +339,7 @@ async function boot() {
 	if ( API && params.get( 'mp' ) !== '0' ) {
 
 		const clean = ( s, n ) => String( s ?? '' ).toLowerCase().replace( /[^a-z0-9-]/g, '' ).slice( 0, n );
-		const stamp = clean( String( ts.root.children?.[ 0 ]?.content?.uri ?? '' ).split( '/' )[ 0 ], 13 ) || 'mesh';
+		const stamp = clean( meshStamp, 13 ) || 'mesh';
 		const room = `${clean( params.get( 'room' ), 12 ) || 'lobby'}-${clean( mesh.id, 12 )}-${stamp}`;    // <= 39 characters
 		net = new Net( new URL( `room/${room}`, API ).href.replace( /^http/, 'ws' ) );
 		net.setName( myName, myCar );
@@ -311,12 +373,12 @@ async function boot() {
 // ---------- satellite basemap ----------
 // Esri World Imagery under and around the mesh, so holes and the edge of the capture show
 // the real surroundings instead of flat grey. The tiles covering the mesh (plus a margin)
-// are composited into ONE canvas texture on ONE quad: a square kilometre is small enough
-// that Web Mercator is affine to within centimetres, and one draw call beats a mesh per tile.
-// The quad is flat and is drawn as a backdrop: the mesh always draws on top of it. Loaded by the browser straight from Esri (no proxy,
+// are composited into a few canvas textures on a few flat quads (3 x 3 tiles each): a few
+// hundred metres is small enough that Web Mercator is affine to within centimetres, and nine
+// draw calls beat a mesh per tile. It is drawn as a backdrop: the mesh always draws on top. Loaded by the browser straight from Esri (no proxy,
 // nothing counted against the Worker). `?sat=0` turns it off.
 const SAT_URL = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
-const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_DROP = 0.3;
+const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_CHUNK = 3, SAT_DROP = 0.3;
 let basemap = null;
 
 function buildBasemap( [ west, south, east, north ] ) {
@@ -325,7 +387,7 @@ function buildBasemap( [ west, south, east, north ] ) {
 	const dLat = SAT_MARGIN / 6371000, dLon = dLat / Math.cos( ( south + north ) / 2 );
 	const tx = ( lon, n ) => ( lon / Math.PI + 1 ) / 2 * n;
 	const ty = ( lat, n ) => ( 1 - Math.asinh( Math.tan( lat ) ) / Math.PI ) / 2 * n;
-	// the sharpest zoom whose tile grid still fits one modest texture (9 x 256 = 2304 px)
+	// the sharpest zoom at which the area is at most 9 x 9 tiles (81 small images)
 	let z = 19, x0, x1, y0, y1;
 	for ( ; z > 10; z -- ) {
 
@@ -336,56 +398,80 @@ function buildBasemap( [ west, south, east, north ] ) {
 
 	}
 
-	const n = 2 ** z, nx = x1 - x0 + 1, ny = y1 - y0 + 1;
-	const canvas = document.createElement( 'canvas' );
-	canvas.width = nx * 256; canvas.height = ny * 256;
-	const ctx = canvas.getContext( '2d' );
-	ctx.fillStyle = '#59605a'; ctx.fillRect( 0, 0, canvas.width, canvas.height );    // the dome's ground colour until tiles arrive
-	const tex = new THREE.CanvasTexture( canvas );
-	tex.colorSpace = THREE.SRGBColorSpace;
-	tex.anisotropy = Math.min( 8, renderer.capabilities.getMaxAnisotropy() );
-
-	// corners of the tile block, lon/lat -> local metres
+	const n = 2 ** z;
+	// corners of a tile block, lon/lat -> local metres
 	const lon = x => ( x / n * 2 - 1 ) * Math.PI, lat = y => Math.atan( Math.sinh( Math.PI * ( 1 - 2 * y / n ) ) );
 	const corner = ( x, y ) => { const p = frame.toLocal( lon( x ), lat( y ) ); return [ p[ 0 ], 0, p[ 2 ] ]; };
-	const geo = new THREE.BufferGeometry();
-	geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
-		...corner( x0, y0 ), ...corner( x1 + 1, y0 ), ...corner( x0, y1 + 1 ), ...corner( x1 + 1, y1 + 1 ) ], 3 ) );    // NW NE SW SE
-	geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
-	geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
-	// The quad is flat and the ground is not, so wherever the mesh dips below it the imagery
-	// would cover the mesh. Its depth is therefore pinned just in front of the sky: every real
-	// surface (mesh, cars) is nearer and draws over it, whatever the two heights are, and it
-	// still hides the sky dome's flat ground colour. Its height only decides where the picture
-	// lands on screen; tick() keeps that at the ground under the car.
-	const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } );
-	mat.onBeforeCompile = shader => {
+	// The picture is flat and the ground is not, so wherever the mesh dips below it the
+	// imagery would cover the mesh. Its depth is therefore pinned just in front of the sky:
+	// every real surface (mesh, cars) is nearer and draws over it, whatever the two heights
+	// are, and it still hides the sky dome's flat ground colour. Its height only decides where
+	// the picture lands on screen; tick() keeps that at the ground under the car.
+	const backdrop = shader => {
 
 		shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999999;' );
 
 	};
-	basemap = new THREE.Mesh( geo, mat );
+	const anisotropy = Math.min( 8, renderer.capabilities.getMaxAnisotropy() );
+
+	// Pieces of SAT_CHUNK x SAT_CHUNK tiles, each its own small canvas texture on its own quad.
+	// One texture for the whole area was a ~20 MB upload that froze the frame for most of a
+	// second; a piece is a ninth of that, uploaded once, when its own tiles are in.
+	basemap = new THREE.Group();
+	const chunks = [];
+	for ( let cy = y0; cy <= y1; cy += SAT_CHUNK ) for ( let cx = x0; cx <= x1; cx += SAT_CHUNK ) {
+
+		const ex = Math.min( x1, cx + SAT_CHUNK - 1 ), ey = Math.min( y1, cy + SAT_CHUNK - 1 );
+		const c = corner( ( cx + ex + 1 ) / 2, ( cy + ey + 1 ) / 2 );
+		chunks.push( { cx, cy, ex, ey, x: c[ 0 ], z: c[ 2 ] } );
+
+	}
+
 	basemap.visible = false;    // until trySpawn knows the ground height
 	scene.add( basemap );
 	$( 'attrib' ).hidden = false;
 
-	// Upload the canvas at most twice a second while tiles trickle in, not once per tile.
-	let dirty = false, timer = 0;
-	const flush = () => { timer = 0; if ( dirty ) { dirty = false; tex.needsUpdate = true; } };
-	for ( let y = y0; y <= y1; y ++ ) for ( let x = x0; x <= x1; x ++ ) {
+	// The imagery is fetched once the car is on the road (trySpawn calls this), so it never
+	// competes with the mesh for the first seconds - nearest piece first, one piece at a
+	// time. A piece's canvas, texture and quad are only made when its images are in, so each
+	// costs exactly one upload, on its own frame; until then that ground is the sky dome's
+	// flat ground colour. Images are decoded off the main thread (createImageBitmap): drawing
+	// an <img> straight to a canvas decodes it there and then, on the frame that does it.
+	basemap.userData.load = async ( nearX, nearZ ) => {
 
-		const img = new Image();
-		img.crossOrigin = 'anonymous';
-		img.onload = () => {
+		basemap.userData.load = null;
+		chunks.sort( ( a, b ) => Math.hypot( a.x - nearX, a.z - nearZ ) - Math.hypot( b.x - nearX, b.z - nearZ ) );
+		for ( const k of chunks ) {
 
-			ctx.drawImage( img, ( x - x0 ) * 256, ( y - y0 ) * 256, 256, 256 );
-			dirty = true;
-			if ( ! timer ) timer = setTimeout( flush, 500 );
+			const canvas = document.createElement( 'canvas' );
+			canvas.width = ( k.ex - k.cx + 1 ) * 256; canvas.height = ( k.ey - k.cy + 1 ) * 256;
+			const ctx = canvas.getContext( '2d' );
+			ctx.fillStyle = '#59605a'; ctx.fillRect( 0, 0, canvas.width, canvas.height );    // a missing tile stays ground-coloured
+			const jobs = [];
+			for ( let y = k.cy; y <= k.ey; y ++ ) for ( let x = k.cx; x <= k.ex; x ++ ) {
 
-		};
-		img.src = `${SAT_URL}/${z}/${y}/${x}`;    // a missing tile just stays ground-coloured
+				jobs.push( fetch( `${SAT_URL}/${z}/${y}/${x}` ).then( r => r.ok ? r.blob() : Promise.reject() ).then( createImageBitmap )
+					.then( bmp => { ctx.drawImage( bmp, ( x - k.cx ) * 256, ( y - k.cy ) * 256, 256, 256 ); bmp.close(); } )
+					.catch( () => {} ) );
 
-	}
+			}
+
+			await Promise.all( jobs );
+			const tex = new THREE.CanvasTexture( canvas );
+			tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = anisotropy;
+			const geo = new THREE.BufferGeometry();
+			geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
+				...corner( k.cx, k.cy ), ...corner( k.ex + 1, k.cy ), ...corner( k.cx, k.ey + 1 ), ...corner( k.ex + 1, k.ey + 1 ) ], 3 ) );    // NW NE SW SE
+			geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
+			geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
+			const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } );
+			mat.onBeforeCompile = backdrop;
+			basemap.add( new THREE.Mesh( geo, mat ) );
+			await new Promise( r => setTimeout( r, 120 ) );    // let a few frames through between uploads
+
+		}
+
+	};
 
 }
 
@@ -593,6 +679,28 @@ function firstSpawnAlong() {
 
 }
 
+// ---------- remembered routes ----------
+let meshStamp = '';
+
+/** Routes as plain data, in local metres: what the survey found, for a later visit to reuse. */
+function exportRoutes() {
+
+	return { stamp: meshStamp, routes: routes.map( r => ( { id: r.id, pts: r.pts.map( p => [ + p.x.toFixed( 2 ), + p.y.toFixed( 2 ) ] ) } ) ) };
+
+}
+
+function importRoutes( saved ) {
+
+	return ( saved.routes ?? [] ).map( r => {
+
+		const pts = r.pts.map( ( [ x, z ] ) => new THREE.Vector2( x, z ) ), cum = [ 0 ];
+		for ( let i = 1; i < pts.length; i ++ ) cum.push( cum[ i - 1 ] + pts[ i ].distanceTo( pts[ i - 1 ] ) );
+		return { id: r.id, pts, cum, length: cum[ cum.length - 1 ] };
+
+	} ).filter( r => r.pts.length > 1 && r.length > 20 );
+
+}
+
 // ---------- routes from the mesh ----------
 // With no usable route export, the mesh is surveyed from above: one down-ray per SCAN_CELL
 // metres gives a height grid, and the longest straight, level runs of ground along either
@@ -688,6 +796,7 @@ function stepScan() {
 	} );
 	console.info( `No route lies on this mesh; found ${routes.length} road line(s) in it, longest ${routes[ 0 ].length} m.` );
 	scan = null;
+	try { localStorage.setItem( `driveMeshRoutes:${mesh.id}`, JSON.stringify( exportRoutes() ) ); } catch { /* private window */ }
 	hudLast.routesFor = - 1;    // re-stroke the minimap with the new routes
 	routeIdx = Math.min( routeIdx, routes.length - 1 );
 	requestSpawn( routeIdx, firstSpawnAlong() );
@@ -728,6 +837,7 @@ function startBvhWorkers( n ) {
 
 				const job = slot.job;
 				slot.job = null;
+				bvhPumpAt = 0;      // a worker is free: hand it the next tile on the very next frame
 				if ( ! job || job.state !== 'building' ) return;    // tile was disposed meanwhile
 				if ( data.error ) return buildBvhSync( job );
 				const t0 = performance.now();
@@ -745,6 +855,7 @@ function startBvhWorkers( n ) {
 				slot.dead = true;
 				if ( slot.job && slot.job.state === 'building' ) slot.job.state = 'waiting';
 				slot.job = null;
+				bvhPumpAt = 0;      // a worker is free: hand it the next tile on the very next frame
 
 			};
 
@@ -767,9 +878,15 @@ function buildBvhSync( job ) {
 
 }
 
+let bvhPumpAt = 0;
 function pumpBvh() {
 
 	if ( ! bvhJobs.size ) return;
+	// Sorting every waiting tile by distance is not free with hundreds queued, and a BVH
+	// build takes tens of milliseconds anyway: handing out work 15 times a second is plenty.
+	const pumpNow = performance.now();
+	if ( pumpNow < bvhPumpAt ) return;
+	bvhPumpAt = pumpNow + 66;
 	const fx = state === 'driving' ? car.pos.x : spawnPending?.x, fz = state === 'driving' ? car.pos.z : spawnPending?.z;
 	if ( fx === undefined ) return;
 	const alive = bvhWorkers.filter( s => ! s.dead ), idle = alive.filter( s => ! s.job );
@@ -931,6 +1048,11 @@ function requestSpawn( idx, along ) {
 function trySpawn() {
 
 	const s = spawnPending;
+	// The probe below is 15 rays against tiles that mostly have no BVH yet (brute force), so
+	// it runs ten times a second rather than every frame while the mesh streams in.
+	const probeAt = performance.now();
+	if ( probeAt < ( s.nextProbe ?? 0 ) ) return;
+	s.nextProbe = probeAt + 100;
 	// Ground is needed under the whole car, not just its centre: the first point on a route
 	// that has mesh is the lip of the mesh, and spawning there leaves the rear wheels in the air.
 	const fx = - Math.sin( s.yaw ), fz = - Math.cos( s.yaw );
@@ -960,7 +1082,18 @@ function trySpawn() {
 
 	if ( s.closeSince === undefined ) s.closeSince = performance.now();
 	const closeFor = performance.now() - s.closeSince;
-	if ( closeFor < 400 || ( ! settled && closeFor < 6000 ) ) {
+	// Ready when streaming has gone quiet, or - usually much sooner - when there is road to
+	// drive onto: ground at four points over the next 45 m of the route. Waiting for every
+	// tile in view cost several seconds; a plain timer let the car set off over holes.
+	let ahead = false;
+	if ( ! settled && closeFor >= 400 ) {
+
+		const r = routes[ s.idx ];
+		ahead = !! r && [ 12, 24, 34, 45 ].every( d => { const q = routePoint( r, s.along + d ); return s.along + d > r.length || groundAt( q.x, q.z ) !== null; } );
+
+	}
+
+	if ( closeFor < 400 || ( ! settled && ! ahead && closeFor < 6000 ) ) {
 
 		camera.position.y = hit.point.y + 6;
 		camera.lookAt( s.x, hit.point.y, s.z );
@@ -976,6 +1109,7 @@ function trySpawn() {
 
 		basemap.position.y = hit.point.y - SAT_DROP;
 		basemap.visible = true;
+		basemap.userData.load?.( s.x, s.z );
 
 	}
 
@@ -1602,6 +1736,7 @@ async function carShot( id, width = 480, height = 300 ) {
 
 window.__game = {
 	carShot,
+	exportRoutes,
 	/** multiplayer: connection status, own id, and where each peer is drawn right now */
 	get net() {
 

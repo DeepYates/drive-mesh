@@ -48,6 +48,10 @@ thumbnail, push. With two or more meshes the start screen shows the gallery. `sc
 **Routes:** a mesh with `"routes": true` loads `static/routes/<id>.geojson`. Without one,
 the game surveys the mesh from above and uses the longest straight, level runs of ground as
 routes (`stepScan` in `src/main.js`); roads at an angle to the axes come out shorter.
+The survey takes several seconds and an overview's worth of tiles, so its result is kept:
+`node test/thumbs.mjs` writes `static/routes/<id>.json` (used when the mesh has
+`"routeCache": true`), and each browser also remembers it. Both are tied to the mesh's
+timestamp folder and ignored when the mesh changes; `?rescan=1` forces a new survey.
 
 ## Lead gate (`src/start.js`, `src/lead.js`)
 
@@ -137,6 +141,25 @@ Esri World Imagery under and around the mesh (`buildBasemap`): one flat quad, lo
 browser straight from Esri with attribution on screen. It is drawn as a backdrop (its depth
 is pinned just in front of the sky), so the mesh always shows over it however the ground
 rises and falls; its height follows the ground under the car so it lines up through holes.
+
+## Performance notes
+
+Measured with the previous and new builds alternating on the same autopilot route
+(1600x900, integrated GPU): time until driving 8.9 s -> 4.0 s, frames over 25 ms
+4.4% -> 0.4%, stalls over 50 ms 20 -> 0 per route. What made the difference:
+
+- **No survey on load** (remembered routes, above).
+- **Spawn when there is road ahead** (ground at four points over the next 45 m) rather than
+  when every tile in view has finished.
+- **Tile textures are uploaded as each tile arrives** (`renderer.initTexture` in the
+  `load-model` handler). Left to the renderer they upload on first draw, and tiles are
+  switched visible in batches, so dozens of uploads landed in one frame.
+- **Embedded KTX2 textures go straight to the transcoder** (`directBasisTextures`) instead
+  of GLTFLoader's Blob -> object URL -> fetch round trip.
+- **Satellite imagery loads after the car spawns**, nearest piece first, as 3x3-tile pieces
+  decoded off the main thread, each uploaded once.
+- Decoders are created at page load (ready while a visitor is on the start screen); the
+  BVH queue is sorted a few times a second, not every frame.
 
 ## How the driving works
 

@@ -153,9 +153,14 @@ try {
 	await g.page.keyboard.up( 'KeyW' );
 	const dbg = await g.g( '({ n: g.net.tileBudget.n, error: g.debug().errorTarget, nudge: document.getElementById("nudgeText").textContent })' );
 	check( dbg.error >= 40, 'G: past the soft budget the mesh drops to low detail', `errorTarget ${dbg.error} after ${dbg.n} network tiles` );
-	const n1 = dbg.n; await sleep( 4000 );
+	// Downloads already in flight when the stop lands (up to 25) still finish, and through a
+	// cold proxy that can take a while: wait until the count stops moving, then it must stay put.
+	let n1 = dbg.n, still = 0;
+	for ( let i = 0; i < 30 && still < 3; i ++ ) { await sleep( 2000 ); const n = await g.g( 'g.net.tileBudget.n' ); still = n === n1 ? still + 1 : 0; n1 = n; }
+	await g.page.keyboard.down( 'KeyW' ); await sleep( 4000 ); await g.page.keyboard.up( 'KeyW' );      // drive on: nothing new may load
 	const n2 = await g.g( 'g.net.tileBudget.n' );
-	check( n2 - n1 <= 8 && /limit/.test( dbg.nudge ), 'G: past the hard stop streaming stops and the visitor is told', `${n1} -> ${n2}; "${dbg.nudge}"` );
+	check( still >= 3 && n2 === n1 && n1 <= 90 + 30 && /limit/.test( dbg.nudge ), 'G: past the hard stop streaming stops and the visitor is told',
+		`settled at ${n1} (limit 90 + up to 25 in flight), still ${n2} after driving on; "${dbg.nudge}"` );
 	await g.ctx.close();
 
 	// ----- C. the day is full (DAILY_USERS = 3: A, D and G took the places)
