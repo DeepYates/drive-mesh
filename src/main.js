@@ -630,8 +630,8 @@ function nudge( kind, message ) {
 
 // ---------- tile budget ----------
 // Every tile fetched over the network is one request against the Worker's daily allowance
-// (100,000 on the free plan), and the demo is sized for 50 visitors a day - so each visitor
-// gets 2,000 network tiles a day. Past `tileBudget` the mesh drops to lower detail;
+// (100,000 on the free plan), and the demo is sized for 25 visitors a day, each with
+// 2,000 network tiles a day (50,000 at most: half the allowance). Past `tileBudget` the mesh drops to lower detail;
 // past `tileHardStop` streaming stops, and what is loaded stays drivable. Tiles served from
 // the browser's own cache are free and are not counted (transferSize is 0).
 //
