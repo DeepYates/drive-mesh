@@ -51,8 +51,14 @@ export default {
 		}
 
 		const origin = request.headers.get( 'Origin' );
-		const allowed = ( env.ALLOWED_ORIGINS || '' ).split( ',' ).map( s => s.trim() ).filter( Boolean );
-		if ( allowed.length && ! allowed.includes( origin ) ) return text( 403, 'origin not allowed' );
+		const list = v => ( v || '' ).split( ',' ).map( s => s.trim() ).filter( Boolean );
+		const allowed = list( env.ALLOWED_ORIGINS );
+		// TILE_ORIGINS: other sites that may read tiles and nothing else - ArcGIS Online's Scene
+		// Viewer, so a mesh can be opened there without its keyed URL. "https://*.host" matches
+		// any subdomain (a signed-in ArcGIS user is on <org>.maps.arcgis.com).
+		const viewer = ! allowed.includes( origin ) && pathname.startsWith( '/tiles/' ) && ( request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS' )
+			&& list( env.TILE_ORIGINS ).some( o => o.includes( '*.' ) ? !! origin && origin.startsWith( o.split( '*.' )[ 0 ] ) && origin.endsWith( '.' + o.split( '*.' )[ 1 ] ) : o === origin );
+		if ( allowed.length && ! allowed.includes( origin ) && ! viewer ) return text( 403, 'origin not allowed' );
 		const cors = {
 			'Access-Control-Allow-Origin': allowed.length ? origin : '*',
 			// lets the page read transferSize for these cross-origin responses: its tile

@@ -584,7 +584,13 @@ function wireBar() {
 	const cta = $( 'cta' );
 	cta.textContent = site.ctaLabel || 'Talk to DeepWalk'; cta.href = site.ctaUrl || '#'; cta.hidden = ! site.ctaUrl;
 	$( 'nudgeCta' ).textContent = cta.textContent; $( 'nudgeCta' ).href = cta.href; $( 'nudgeCta' ).hidden = ! site.ctaUrl;
-	if ( mesh.sceneUrl ) { $( 'arcgis' ).href = mesh.sceneUrl; $( 'arcgis' ).hidden = false; }
+	// "View in ArcGIS Online": Scene Viewer opens a 3D Tiles layer from a tileset.json address
+	// given in its `url` parameter. The address is this mesh's keyless one on the Worker (which
+	// lets ArcGIS's site read tiles: TILE_ORIGINS in wrangler.toml), never the keyed service
+	// URL. A mesh can name its own link instead (meshes.json: "sceneUrl", e.g. a saved web
+	// scene), or switch the button off with "sceneUrl": false.
+	const sceneUrl = mesh.sceneUrl ?? ( API ? `https://www.arcgis.com/home/webscene/viewer.html?url=${encodeURIComponent( `${TILES_BASE}${mesh.id}/tileset.json` )}` : '' );
+	if ( sceneUrl ) { $( 'arcgis' ).href = sceneUrl; $( 'arcgis' ).hidden = false; }
 	const home = new URL( location.href );
 	if ( meshCount > 1 ) home.searchParams.delete( 'mesh' );
 	home.searchParams.delete( 'room' ); home.searchParams.set( 'pick', '1' );
@@ -1741,7 +1747,7 @@ window.__game = {
 	get net() {
 
 		return { status: net.status, id: net.id, url: net.url,
-			name: myName, car: myCar, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
+			name: myName, car: myCar, sceneUrl: document.getElementById( 'arcgis' ).hidden ? '' : document.getElementById( 'arcgis' ).href, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
 
 	},
 	get state() {

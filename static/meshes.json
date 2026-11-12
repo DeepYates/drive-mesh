@@ -22,8 +22,7 @@
       "place": "Pinellas County, Florida",
       "blurb": "About 500 m of road, sidewalk and street furniture.",
       "thumb": "thumbs/pinellas.jpg",
-      "routeCache": true,
-      "sceneUrl": ""
+      "routeCache": true
     }
   ]
 }

@@ -19,6 +19,11 @@ compatibility_date = "2026-10-01"
 [vars]
 # Sites allowed to use the proxy and the rooms (comma-separated origins: scheme + host, no path).
 ALLOWED_ORIGINS = "https://deepyates.github.io"
+# Sites that may read tiles only: ArcGIS Online's Scene Viewer, for the "View in ArcGIS
+# Online" link (meshes.json: sceneUrl), which points at /tiles/<mesh>/tileset.json here so
+# the keyed service URL is never published. "*." matches any subdomain. Their tile requests
+# count against the same daily allowance as the game's and have no per-visitor budget.
+TILE_ORIGINS = "https://www.arcgis.com,https://*.maps.arcgis.com"
 # "off" turns multiplayer off (the game keeps working single-player). Redeploy to apply.
 MULTIPLAYER = "on"
 # Players per room; one more gets "room full" and plays alone.

@@ -37,13 +37,21 @@ site.privacyUrl                 linked from the lead form when set
 site.hubspot.portalId/formGuid  lead capture; an empty formGuid turns the gate OFF
 site.hubspot.consentText        sent as GDPR consent text if the portal requires it
 site.errorTarget                tile detail; site.tileBudget / tileHardStop: see Capacity
-meshes[]: id, title, provider, place, blurb, thumb, routes?, sceneUrl?
+meshes[]: id, title, provider, place, blurb, thumb, routes?, routeCache?, sceneUrl?
 ```
 
 **Add a mesh:** add an entry to `meshes[]`, add its tileset URL under the same id to the
 Worker's `TILESETS` secret (and `tilesets.local.json`), run `node test/thumbs.mjs` for its
-thumbnail, push. With two or more meshes the start screen shows the gallery. `sceneUrl`
-(optional) adds a "View in ArcGIS Online" button for that mesh.
+thumbnail, push. With two or more meshes the start screen shows the gallery.
+
+**View in ArcGIS Online:** every mesh gets this button. It opens ArcGIS Online's Scene
+Viewer with the mesh as a 3D Tiles layer:
+`https://www.arcgis.com/home/webscene/viewer.html?url=<worker>/tiles/<id>/tileset.json`
+(URL-encoded). The address is the Worker's keyless one, so the keyed service URL is never
+published; `TILE_ORIGINS` in `worker/wrangler.toml` lets ArcGIS's site (and any
+`<org>.maps.arcgis.com`) read tiles and nothing else. Those requests count against the
+same daily allowance and have no per-visitor budget. A mesh can set its own `sceneUrl`
+(a saved web scene, say), or `"sceneUrl": false` for no button.
 
 **Routes:** a mesh with `"routes": true` loads `static/routes/<id>.geojson`. Without one,
 the game surveys the mesh from above and uses the longest straight, level runs of ground as
