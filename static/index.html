@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drive Mesh</title>
+<link rel="icon" href="data:,">
+<link rel="modulepreload" href="./bundle.js">
+<style>
+  /* No backdrop-filter on the panels: blurring what is behind them means re-blurring the
+     WebGL canvas on every frame, which costs more than the HUD is worth on integrated GPUs. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #c4d6e6;
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #eef2f6; }
+  canvas { display: block; }
+  .panel { position: fixed; background: rgba(13, 17, 23, .74); border: 1px solid rgba(255, 255, 255, .09);
+    border-radius: 12px; padding: 12px 16px; box-shadow: 0 6px 24px rgba(0, 0, 0, .22); }
+  #hud { left: 16px; bottom: 16px; min-width: 200px; }
+  #speed { font: 700 46px/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums;
+    letter-spacing: -.02em; color: #fff; }
+  #speed + small { opacity: .6; margin-left: 7px; letter-spacing: .12em; font-weight: 600; }
+  #status { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .1);
+    opacity: .88; font-variant-numeric: tabular-nums; }
+  #status b { color: #ffd166; font-weight: 600; }
+  .warn { color: #ffd166; font-weight: 600; }
+  #help { right: 16px; bottom: 16px; opacity: .92; }
+  #help div { display: flex; align-items: baseline; gap: 12px; }
+  #help b { flex: 0 0 62px; color: #ffd166; font-weight: 600; letter-spacing: .04em; }
+  #map { right: 16px; top: 16px; padding: 6px; }
+  #minimap { display: block; }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 16px; align-items: center;
+    justify-content: center; font-size: 15px; letter-spacing: .04em; background: rgba(13, 17, 23, .42);
+    pointer-events: none; transition: opacity .45s ease; }
+  #overlay.hidden { opacity: 0; }
+  #overlay::before { content: ""; width: 34px; height: 34px; border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, .22); border-top-color: #ffd166; animation: spin .9s linear infinite; }
+  #overlay.hidden::before, #overlay.failed::before { animation: none; }
+  #overlay.failed::before { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 760px) { #help { display: none; } }
+</style>
+</head>
+<body>
+<div id="hud" class="panel">
+  <span id="speed">0</span><small>MPH</small>
+  <div id="status"></div>
+</div>
+<div id="map" class="panel"><canvas id="minimap" width="240" height="180"></canvas></div>
+<div id="help" class="panel">
+  <div><b>W A S D</b> drive (or arrows)</div>
+  <div><b>Space</b> handbrake</div>
+  <div><b>R</b> reset onto the route</div>
+  <div><b>N</b> next route</div>
+  <div><b>C</b> camera</div>
+  <div><b>P</b> autopilot</div>
+</div>
+<div id="overlay"><span id="overlayText">Starting…</span></div>
+<script type="module" src="./bundle.js"></script>
+</body>
+</html>

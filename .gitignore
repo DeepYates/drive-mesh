@@ -1,0 +1,15 @@
+node_modules/
+.cache/
+# build output (npm run build)
+static/bundle.js
+static/bundle.js.map
+static/bvh.worker.js
+static/bvh.worker.js.map
+static/libs/
+# perf-comparison baseline build, not part of the site
+static/base/
+test/out/
+# contains the DeepWalk API key
+tileset_url.local.txt
+worker/.dev.vars
+worker/.wrangler/

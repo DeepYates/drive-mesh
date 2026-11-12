@@ -1,0 +1,14 @@
+# Tile proxy for the hosted Drive Mesh game. Deploy from this folder:
+#
+#   npx wrangler login
+#   npx wrangler secret put TILESET_URL     # paste the full .../tileset.json URL (has the API key)
+#   npx wrangler deploy
+#
+# The deploy prints the Worker URL; the game's tileset is <that URL>/tiles/tileset.json.
+name = "drive-mesh-tiles"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# Sites allowed to use the proxy (comma-separated origins: scheme + host, no path).
+ALLOWED_ORIGINS = "https://deepyates.github.io"

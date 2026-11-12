@@ -1,0 +1,48 @@
+# Build the game and publish static/ to GitHub Pages.
+# Needs: Settings -> Pages -> Source = "GitHub Actions", and a repository variable
+# TILESET_URL = https://<worker>.workers.dev/tiles/tileset.json (the tile proxy in worker/).
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Require the tile proxy URL
+        env:
+          TILESET_URL: ${{ vars.TILESET_URL }}
+        run: |
+          case "$TILESET_URL" in
+            https://*/tiles/tileset.json) ;;
+            *) echo "::error::Set the repository variable TILESET_URL to https://<worker>/tiles/tileset.json"; exit 1 ;;
+          esac
+      - run: npm ci
+      - run: npm run build
+        env:
+          TILESET_URL: ${{ vars.TILESET_URL }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: static
+      - id: deploy
+        uses: actions/deploy-pages@v4
