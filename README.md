@@ -175,29 +175,30 @@ a "Take the wheel" button, uses coarser tile detail and a compact HUD.
 
 ## Satellite basemap
 
-Esri World Imagery under and around the mesh (`buildBasemap`): one flat quad, loaded by the
-browser straight from Esri with attribution on screen. It is drawn as a backdrop (its depth
-is pinned just in front of the sky), so the mesh always shows over it however the ground
-rises and falls; its height follows the ground under the car so it lines up through holes.
+Aerial imagery under and around the mesh (`buildBasemap`), loaded by the browser straight
+from the imagery server, with its attribution on screen. It is drawn as a backdrop (its
+depth is pinned just in front of the sky), so the mesh always shows over it however the
+ground rises and falls; its height follows the ground under the car. `?sat=0` turns it off.
 
-## Performance notes
+The default source is Esri World Imagery. A mesh can name its own in the catalogue:
 
-Measured with the previous and new builds alternating on the same autopilot route
-(1600x900, integrated GPU): time until driving 8.9 s -> 4.0 s, frames over 25 ms
-4.4% -> 0.4%, stalls over 50 ms 20 -> 0 per route. What made the difference:
+```
+"basemap": { "url": "https://.../tile/{z}/{y}/{x}", "maxZoom": 19, "detailZoom": 21,
+             "attribution": "..." }
+```
 
-- **No survey on load** (remembered routes, above).
-- **Spawn when there is road ahead** (ground at four points over the next 45 m) rather than
-  when every tile in view has finished.
-- **Tile textures are uploaded as each tile arrives** (`renderer.initTexture` in the
-  `load-model` handler). Left to the renderer they upload on first draw, and tiles are
-  switched visible in batches, so dozens of uploads landed in one frame.
-- **Embedded KTX2 textures go straight to the transcoder** (`directBasisTextures`) instead
-  of GLTFLoader's Blob -> object URL -> fetch round trip.
-- **Satellite imagery loads after the car spawns**, nearest piece first, as 3x3-tile pieces
-  decoded off the main thread, each uploaded once.
-- Decoders are created at page load (ready while a visitor is on the start screen); the
-  BVH queue is sorted a few times a second, not every frame.
+`maxZoom` caps the wide layer (the whole mesh plus a margin, at most 9 x 9 tiles). With
+`detailZoom`, a second, sharper layer streams in within 70 m of the car as it drives and is
+dropped when far behind. The server must use the standard Web Mercator tile scheme and
+allow cross-origin requests.
+
+**Local-only settings:** on `localhost`/`127.0.0.1` the page also loads the git-ignored
+`static/meshes.local.json` and lays it over the catalogue
+(`{ "site": {...}, "meshes": { "<id>": {...} } }`). The live site never requests it.
+Pinellas is set there to the county's 2026 3-inch orthophotos
+(`egis.pinellas.gov/gis/rest/services/Aerials2026/ImageServer`, native at level 21), so
+that imagery shows locally only. To publish it, move that `basemap` block into the
+`pinellas` entry of `static/meshes.json`.
 
 ## How the driving works
 

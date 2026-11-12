@@ -133,6 +133,21 @@ export async function start( { params, asset, api } ) {
 	const cfg = await fetch( asset( './meshes.json' ) ).then( r => r.ok ? r.json() : Promise.reject( new Error( `meshes.json ${r.status}` ) ) );
 	const site = cfg.site ?? {}, meshes = cfg.meshes ?? [];
 	if ( ! meshes.length ) throw new Error( 'no meshes are configured' );
+	// Local-only settings: on a developer's machine, static/meshes.local.json (git-ignored) is
+	// laid over the catalogue - { "site": {...}, "meshes": { "<id>": {...} } } - so something
+	// can be tried here without publishing it. The live site never asks for the file.
+	if ( /^(localhost|127\.0\.0\.1)$/.test( location.hostname ) ) {
+
+		const local = await fetch( asset( './meshes.local.json' ) ).then( r => r.ok ? r.json() : null ).catch( () => null );
+		if ( local ) {
+
+			Object.assign( site, local.site ?? {} );
+			for ( const m of meshes ) Object.assign( m, local.meshes?.[ m.id ] ?? {} );
+
+		}
+
+	}
+
 	// An unlisted mesh ("unlisted": true) is never offered: not in the gallery, not as the
 	// default. It loads only for a link that names it (?mesh=<id>). That keeps it off the
 	// site, not secret - its id is in this public file.

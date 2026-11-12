@@ -381,24 +381,96 @@ async function boot() {
 }
 
 // ---------- satellite basemap ----------
-// Esri World Imagery under and around the mesh, so holes and the edge of the capture show
-// the real surroundings instead of flat grey. The tiles covering the mesh (plus a margin)
-// are composited into a few canvas textures on a few flat quads (3 x 3 tiles each): a few
-// hundred metres is small enough that Web Mercator is affine to within centimetres, and nine
-// draw calls beat a mesh per tile. It is drawn as a backdrop: the mesh always draws on top. Loaded by the browser straight from Esri (no proxy,
-// nothing counted against the Worker). `?sat=0` turns it off.
-const SAT_URL = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
+// Aerial imagery under and around the mesh, so holes and the edge of the capture show the
+// real surroundings instead of flat grey. It is drawn as a backdrop (see `pinned` below): the
+// mesh always draws on top. The browser loads it straight from the imagery server - nothing
+// goes through the Worker. `?sat=0` turns it off.
+//
+// The source is Esri World Imagery unless the mesh names its own (meshes.json: "basemap":
+// { url with {z}/{y}/{x}, maxZoom, detailZoom?, attribution }), e.g. a county's orthophotos.
+// Two layers:
+//   wide    the whole mesh plus a margin, at the sharpest zoom that needs at most 9 x 9
+//           tiles, loaded once after the car spawns, nearest piece first;
+//   detail  only if the source has `detailZoom`: pieces at that (much sharper) zoom within
+//           DETAIL_RADIUS of the car, loaded as it drives and dropped when far behind.
+//           Covering everything at 7.5 cm a pixel would be thousands of images.
+// A piece is 3 x 3 tiles composited into one canvas texture on one flat quad: a few hundred
+// metres is small enough that Web Mercator is affine to within centimetres.
+const SAT_DEFAULT = { url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+	maxZoom: 19, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' };
 const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_CHUNK = 3, SAT_DROP = 0.3;
-let basemap = null;
+const DETAIL_RADIUS = 70, DETAIL_KEEP = 28;      // metres around the car; detail pieces kept in memory
+let basemap = null, detailAt = 0;
+
+// The picture is flat and the ground is not, so wherever the mesh dips below it the imagery
+// would cover the mesh. Its depth is therefore pinned just in front of the sky: every real
+// surface (mesh, cars) is nearer and draws over it, whatever the two heights are, and it
+// still hides the sky dome's flat ground colour. Its height only decides where the picture
+// lands on screen; tick() keeps that at the ground under the car. The detail layer is pinned
+// a hair nearer than the wide one, so it wins where both exist.
+const pinnedWide = shader => { shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999999;' ); };
+const pinnedDetail = shader => { shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999998;' ); };
 
 function buildBasemap( [ west, south, east, north ] ) {
 
 	if ( params.get( 'sat' ) === '0' ) return;
+	const src = { ...SAT_DEFAULT, ...( mesh.basemap || {} ) };
+	const tileUrl = ( z, x, y ) => src.url.replace( '{z}', z ).replace( '{y}', y ).replace( '{x}', x );
 	const dLat = SAT_MARGIN / 6371000, dLon = dLat / Math.cos( ( south + north ) / 2 );
 	const tx = ( lon, n ) => ( lon / Math.PI + 1 ) / 2 * n;
 	const ty = ( lat, n ) => ( 1 - Math.asinh( Math.tan( lat ) ) / Math.PI ) / 2 * n;
-	// the sharpest zoom at which the area is at most 9 x 9 tiles (81 small images)
-	let z = 19, x0, x1, y0, y1;
+	// corner of tile (x, y) at zoom z, lon/lat -> local metres
+	const corner = ( z, x, y ) => {
+
+		const n = 2 ** z, p = frame.toLocal( ( x / n * 2 - 1 ) * Math.PI, Math.atan( Math.sinh( Math.PI * ( 1 - 2 * y / n ) ) ) );
+		return [ p[ 0 ], 0, p[ 2 ] ];
+
+	};
+	const anisotropy = Math.min( 8, renderer.capabilities.getMaxAnisotropy() );
+
+	/**
+	 * One piece: tiles cx..ex by cy..ey at zoom z, fetched, composited and put on a quad. Its
+	 * canvas, texture and quad are only made once its images are in, so it costs exactly one
+	 * upload, on its own frame. Images are decoded off the main thread (createImageBitmap):
+	 * drawing an <img> straight to a canvas decodes it there and then, on the frame that does it.
+	 * Resolves null if no tile arrived (outside the source's coverage).
+	 */
+	const piece = async ( z, k, detail ) => {
+
+		const canvas = document.createElement( 'canvas' );
+		canvas.width = ( k.ex - k.cx + 1 ) * 256; canvas.height = ( k.ey - k.cy + 1 ) * 256;
+		const ctx = canvas.getContext( '2d' );
+		// wide: a missing tile stays ground-coloured. detail: it stays clear, so the wide layer shows.
+		if ( ! detail ) { ctx.fillStyle = '#59605a'; ctx.fillRect( 0, 0, canvas.width, canvas.height ); }
+		let got = 0;
+		const jobs = [];
+		for ( let y = k.cy; y <= k.ey; y ++ ) for ( let x = k.cx; x <= k.ex; x ++ ) {
+
+			jobs.push( fetch( tileUrl( z, x, y ) ).then( r => r.ok ? r.blob() : Promise.reject() ).then( createImageBitmap )
+				.then( bmp => { ctx.drawImage( bmp, ( x - k.cx ) * 256, ( y - k.cy ) * 256, 256, 256 ); bmp.close(); got ++; } )
+				.catch( () => {} ) );
+
+		}
+
+		await Promise.all( jobs );
+		if ( ! got ) return null;
+		const tex = new THREE.CanvasTexture( canvas );
+		tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = anisotropy;
+		const geo = new THREE.BufferGeometry();
+		geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
+			...corner( z, k.cx, k.cy ), ...corner( z, k.ex + 1, k.cy ), ...corner( z, k.cx, k.ey + 1 ), ...corner( z, k.ex + 1, k.ey + 1 ) ], 3 ) );    // NW NE SW SE
+		geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
+		geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
+		const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da, alphaTest: detail ? 0.5 : 0 } );
+		mat.onBeforeCompile = detail ? pinnedDetail : pinnedWide;
+		const quad = new THREE.Mesh( geo, mat );
+		quad.renderOrder = detail ? - 1 : - 2;      // wide first, detail over it, both before the mesh
+		return quad;
+
+	};
+
+	// ----- wide layer: the sharpest zoom at which the area is at most 9 x 9 tiles (81 small images)
+	let z = Math.min( 19, src.maxZoom || 19 ), x0, x1, y0, y1;
 	for ( ; z > 10; z -- ) {
 
 		const n = 2 ** z;
@@ -408,78 +480,77 @@ function buildBasemap( [ west, south, east, north ] ) {
 
 	}
 
-	const n = 2 ** z;
-	// corners of a tile block, lon/lat -> local metres
-	const lon = x => ( x / n * 2 - 1 ) * Math.PI, lat = y => Math.atan( Math.sinh( Math.PI * ( 1 - 2 * y / n ) ) );
-	const corner = ( x, y ) => { const p = frame.toLocal( lon( x ), lat( y ) ); return [ p[ 0 ], 0, p[ 2 ] ]; };
-	// The picture is flat and the ground is not, so wherever the mesh dips below it the
-	// imagery would cover the mesh. Its depth is therefore pinned just in front of the sky:
-	// every real surface (mesh, cars) is nearer and draws over it, whatever the two heights
-	// are, and it still hides the sky dome's flat ground colour. Its height only decides where
-	// the picture lands on screen; tick() keeps that at the ground under the car.
-	const backdrop = shader => {
-
-		shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999999;' );
-
-	};
-	const anisotropy = Math.min( 8, renderer.capabilities.getMaxAnisotropy() );
-
-	// Pieces of SAT_CHUNK x SAT_CHUNK tiles, each its own small canvas texture on its own quad.
-	// One texture for the whole area was a ~20 MB upload that froze the frame for most of a
-	// second; a piece is a ninth of that, uploaded once, when its own tiles are in.
 	basemap = new THREE.Group();
 	const chunks = [];
 	for ( let cy = y0; cy <= y1; cy += SAT_CHUNK ) for ( let cx = x0; cx <= x1; cx += SAT_CHUNK ) {
 
 		const ex = Math.min( x1, cx + SAT_CHUNK - 1 ), ey = Math.min( y1, cy + SAT_CHUNK - 1 );
-		const c = corner( ( cx + ex + 1 ) / 2, ( cy + ey + 1 ) / 2 );
+		const c = corner( z, ( cx + ex + 1 ) / 2, ( cy + ey + 1 ) / 2 );
 		chunks.push( { cx, cy, ex, ey, x: c[ 0 ], z: c[ 2 ] } );
 
 	}
 
 	basemap.visible = false;    // until trySpawn knows the ground height
 	scene.add( basemap );
-	$( 'attrib' ).hidden = false;
+	$( 'attrib' ).textContent = src.attribution || '';
+	$( 'attrib' ).hidden = ! src.attribution;
 
-	// The imagery is fetched once the car is on the road (trySpawn calls this), so it never
-	// competes with the mesh for the first seconds - nearest piece first, one piece at a
-	// time. A piece's canvas, texture and quad are only made when its images are in, so each
-	// costs exactly one upload, on its own frame; until then that ground is the sky dome's
-	// flat ground colour. Images are decoded off the main thread (createImageBitmap): drawing
-	// an <img> straight to a canvas decodes it there and then, on the frame that does it.
+	// Fetched once the car is on the road (trySpawn calls this), so it never competes with
+	// the mesh for the first seconds - nearest piece first, one piece at a time.
 	basemap.userData.load = async ( nearX, nearZ ) => {
 
 		basemap.userData.load = null;
 		chunks.sort( ( a, b ) => Math.hypot( a.x - nearX, a.z - nearZ ) - Math.hypot( b.x - nearX, b.z - nearZ ) );
 		for ( const k of chunks ) {
 
-			const canvas = document.createElement( 'canvas' );
-			canvas.width = ( k.ex - k.cx + 1 ) * 256; canvas.height = ( k.ey - k.cy + 1 ) * 256;
-			const ctx = canvas.getContext( '2d' );
-			ctx.fillStyle = '#59605a'; ctx.fillRect( 0, 0, canvas.width, canvas.height );    // a missing tile stays ground-coloured
-			const jobs = [];
-			for ( let y = k.cy; y <= k.ey; y ++ ) for ( let x = k.cx; x <= k.ex; x ++ ) {
-
-				jobs.push( fetch( `${SAT_URL}/${z}/${y}/${x}` ).then( r => r.ok ? r.blob() : Promise.reject() ).then( createImageBitmap )
-					.then( bmp => { ctx.drawImage( bmp, ( x - k.cx ) * 256, ( y - k.cy ) * 256, 256, 256 ); bmp.close(); } )
-					.catch( () => {} ) );
-
-			}
-
-			await Promise.all( jobs );
-			const tex = new THREE.CanvasTexture( canvas );
-			tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = anisotropy;
-			const geo = new THREE.BufferGeometry();
-			geo.setAttribute( 'position', new THREE.Float32BufferAttribute( [
-				...corner( k.cx, k.cy ), ...corner( k.ex + 1, k.cy ), ...corner( k.cx, k.ey + 1 ), ...corner( k.ex + 1, k.ey + 1 ) ], 3 ) );    // NW NE SW SE
-			geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
-			geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
-			const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } );
-			mat.onBeforeCompile = backdrop;
-			basemap.add( new THREE.Mesh( geo, mat ) );
+			const quad = await piece( z, k, false );
+			if ( quad ) basemap.add( quad );
 			await new Promise( r => setTimeout( r, 120 ) );    // let a few frames through between uploads
 
 		}
+
+	};
+
+	// ----- detail layer, around the car
+	const dz = Number( src.detailZoom ) || 0;
+	if ( dz <= z ) return;
+	// local metres <-> detail tile coordinates: affine over this small an area, so two spans do it
+	const dn = 2 ** dz, ox = Math.floor( tx( west - dLon, dn ) ), oy = Math.floor( ty( north + dLat, dn ) );
+	const o = corner( dz, ox, oy ), e1 = corner( dz, ox + 64, oy ), s1 = corner( dz, ox, oy + 64 );
+	const perTileX = ( e1[ 0 ] - o[ 0 ] ) / 64, perTileZ = ( s1[ 2 ] - o[ 2 ] ) / 64;      // metres per tile, east and south
+	const pieces = new Map();      // "cx,cy" -> { quad | null, x, z } ; null = loading, or nothing there
+	let busy = false;
+	basemap.userData.near = async ( carX, carZ ) => {
+
+		if ( busy || basemap.userData.load ) return;      // one piece at a time, and the wide layer first
+		const fx = ox + ( carX - o[ 0 ] ) / perTileX, fy = oy + ( carZ - o[ 2 ] ) / perTileZ;      // the car, in tile coordinates
+		const r = DETAIL_RADIUS / Math.abs( perTileX );
+		let best = null, bestD = Infinity;
+		for ( let cy = Math.floor( ( fy - r ) / SAT_CHUNK ) * SAT_CHUNK; cy <= fy + r; cy += SAT_CHUNK ) for ( let cx = Math.floor( ( fx - r ) / SAT_CHUNK ) * SAT_CHUNK; cx <= fx + r; cx += SAT_CHUNK ) {
+
+			if ( pieces.has( `${cx},${cy}` ) ) continue;
+			const d = Math.hypot( cx + SAT_CHUNK / 2 - fx, cy + SAT_CHUNK / 2 - fy );
+			if ( d < r + SAT_CHUNK && d < bestD ) { bestD = d; best = { cx, cy, ex: cx + SAT_CHUNK - 1, ey: cy + SAT_CHUNK - 1 }; }
+
+		}
+
+		if ( ! best ) return;
+		busy = true;
+		const key = `${best.cx},${best.cy}`, c = corner( dz, best.cx + SAT_CHUNK / 2, best.cy + SAT_CHUNK / 2 );
+		pieces.set( key, { quad: null, x: c[ 0 ], z: c[ 2 ] } );
+		const quad = await piece( dz, best, true ).catch( () => null );
+		if ( quad ) { basemap.add( quad ); pieces.get( key ).quad = quad; }
+		// keep the nearest DETAIL_KEEP pieces; free the rest (they reload if the car comes back)
+		const loaded = [ ...pieces ].filter( ( [ , v ] ) => v.quad ).sort( ( a, b ) => Math.hypot( b[ 1 ].x - car.pos.x, b[ 1 ].z - car.pos.z ) - Math.hypot( a[ 1 ].x - car.pos.x, a[ 1 ].z - car.pos.z ) );
+		for ( const [ k, v ] of loaded.slice( 0, Math.max( 0, loaded.length - DETAIL_KEEP ) ) ) {
+
+			basemap.remove( v.quad );
+			v.quad.geometry.dispose(); v.quad.material.map.dispose(); v.quad.material.dispose();
+			pieces.delete( k );
+
+		}
+
+		busy = false;
 
 	};
 
@@ -1350,6 +1421,8 @@ function tick() {
 		net.send( car, carBraking, now );
 		// the satellite picture follows the ground under the car (see buildBasemap)
 		if ( basemap ) basemap.position.y += ( car.pos.y + CAR_GROUND_Y - SAT_DROP - basemap.position.y ) * Math.min( 1, dt * 2 );
+		// sharper imagery around the car, where the source has it (a few times a second is plenty)
+		if ( basemap?.userData.near && now > detailAt ) { detailAt = now + 300; basemap.userData.near( car.pos.x, car.pos.z ); }
 		if ( ( driveTime += dt ) > 90 ) nudge( 'time', 'Like what you see? We can mesh your streets too.' );
 
 	}
