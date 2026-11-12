@@ -100,7 +100,7 @@ The site is sized for **100 new visitors a day** (`DAILY_USERS` in `worker/wrang
   browser's cache (kept 30 days) are not counted. **At 100 visitors a day that is about one
   route per visitor.** More per visitor means fewer visitors, or the paid plan.
 - **Limits against abuse:** only the Pages origin may call the Worker; per-IP rate limits
-  (tiles 1,200/min, rooms 40/min, forms 20/min; approximate); rooms hold 8 players, accept
+  (tiles 5,000/min, about five cars at speed behind one address; rooms 40/min; forms 20/min; approximate); rooms hold 8 players, accept
   15 messages/s per socket, drop sockets silent for 5 min, and hibernate when quiet;
   `MULTIPLAYER = "off"` turns rooms off.
 - **Numbers:** `GET <worker>/stats?key=<STATS_KEY>&days=7` returns per-day admissions,

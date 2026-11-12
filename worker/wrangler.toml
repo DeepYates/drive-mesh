@@ -49,15 +49,16 @@ tag = "v2"
 new_sqlite_classes = ["Gate"]
 
 # Per-IP rate limits (approximate; counted per Cloudflare location). A cold start of the game
-# is ~350 tile requests in the first half minute, and an office of several players shares one
-# address, so the tile limit sits well above that.
+# is ~250 tile requests and a car at speed pulls ~860 a minute; several players in one office
+# share an address, so the tile limit allows about five of them driving at once. It only
+# stops a runaway script quickly - the daily allowance is the real limit.
 # The room limit allows for several players behind one office address.
 [[ratelimits]]
 name = "LIMIT_TILES"
 namespace_id = "1001"
 
   [ratelimits.simple]
-  limit = 1200
+  limit = 5000
   period = 60
 
 [[ratelimits]]
