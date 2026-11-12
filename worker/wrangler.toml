@@ -26,9 +26,10 @@ MAX_PLAYERS = "8"
 # New visitors admitted per UTC day; the next one sees the "at capacity" page. 25 visitors
 # x up to 4,000 tile requests each is the Free plan's 100,000 requests a day.
 DAILY_USERS = "25"
-# HubSpot form that /lead forwards to (public ids, not secrets). Empty = /lead answers 503.
+# HubSpot form that /lead forwards to (public ids, not secrets; the same ids are in
+# static/meshes.json). Empty = /lead answers 503.
 HUBSPOT_PORTAL = "46598388"
-HUBSPOT_FORM = ""
+HUBSPOT_FORM = "242060b0-0bed-4978-8941-515a68cc9616"
 
 # Multiplayer rooms (src/room.js). SQLite-backed: the only kind the Free plan allows.
 [[durable_objects.bindings]]

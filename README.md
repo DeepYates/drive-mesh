@@ -59,18 +59,25 @@ With `site.hubspot.formGuid` set, a visitor must give a work email and a name be
 driving; company is optional. Order: form → `POST /enter` (admission) → HubSpot → drive, or
 the capacity page. The lead reaches HubSpot either way.
 
-**The HubSpot form must have exactly these fields, with reCAPTCHA off** (HubSpot rejects
-submissions containing any field that is not on the form):
+**The HubSpot form** (legacy editor, reCAPTCHA off) is "Drive Mesh" form
+`242060b0-0bed-4978-8941-515a68cc9616` in portal 46598388. Its id is in
+`site.hubspot.formGuid` and in `HUBSPOT_FORM` in `worker/wrangler.toml`. Fields the game can fill:
 
 | Field | Type | Notes |
 |---|---|---|
-| `email` | built-in | |
+| `email` | built-in | required; the only field the form has today |
 | `firstname` | built-in | the name shown above the car |
-| `company` | built-in | optional |
+| `company` | built-in | optional for the visitor |
 | `drive_demo_mesh` | new contact property, single-line text | mesh id |
 | `drive_demo_outcome` | new contact property, single-line text | `played` or `at_capacity` |
 
-Put the form's id in `site.hubspot.formGuid` and in `HUBSPOT_FORM` in `worker/wrangler.toml`.
+Only the fields the form has are sent: the page reads the form's public definition first
+(the JSON HubSpot's embed script uses). Add a field to the form in HubSpot and it starts
+being filled; nothing changes here. If the definition cannot be read, the lead is offered in
+three shapes until one is accepted: all five fields, then email + name + company, then email
+alone. Every submission's page name reads "Drive the mesh - <mesh> - drove it" (or
+"turned away, demo at capacity"), followed by the name and company when those could not be
+sent as fields.
 
 - The browser posts to `api.hsforms.com` directly. If that is blocked (ad blockers), it
   retries through the Worker (`POST /lead`). If both fail, the visitor is let in and the

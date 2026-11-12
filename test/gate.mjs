@@ -33,11 +33,23 @@ const hubspot = createServer( ( req, res ) => {
 
 	const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
 	if ( req.method === 'OPTIONS' ) return res.writeHead( 204, cors ).end();
+	// the form's public definition, as HubSpot's embed endpoint serves it; "no-definition" has none
+	const def = /^\/embed\/v3\/form\/[^/]+\/([^/]+)\/json$/.exec( req.url );
+	if ( def ) {
+
+		if ( def[ 1 ] === 'no-definition' ) return res.writeHead( 404, cors ).end();
+		const names = def[ 1 ] === 'email-only' ? [ 'email' ] : FORM_FIELDS;
+		return res.writeHead( 200, { 'Content-Type': 'application/json', ...cors } ).end( JSON.stringify( { form: { formFieldGroups: names.map( name => ( { fields: [ { name } ] } ) ) } } ) );
+
+	}
+
 	let raw = '';
 	req.on( 'data', c => raw += c ).on( 'end', () => {
 
 		const body = JSON.parse( raw ), f = Object.fromEntries( body.fields.map( x => [ x.name, x.value ] ) );
-		const bad = body.fields.find( x => ! FORM_FIELDS.includes( x.name ) );
+		// the form "email-only" has just the email field, like a form made with HubSpot's defaults
+		const onForm = /\/(email-only|no-definition)$/.test( req.url ) ? [ 'email' ] : FORM_FIELDS;
+		const bad = body.fields.find( x => ! onForm.includes( x.name ) );
 		const error = bad ? 'FIELD_NOT_IN_FORM_DEFINITION' : /@blocked\.test$/.test( f.email ) ? 'BLOCKED_EMAIL' : null;
 		leads.push( { path: req.url, via: req.headers.origin ? 'browser' : 'worker', f, context: body.context, error } );
 		res.writeHead( error ? 400 : 200, { 'Content-Type': 'application/json', ...cors } )
@@ -64,7 +76,7 @@ async function visitor( { site = {}, block = null, query = '', extraMesh = false
 		if ( block && block.test( req.url() ) && req.method() !== 'OPTIONS' ) return req.abort();
 		if ( ! req.url().endsWith( '/meshes.json' ) ) return req.continue();
 		const cfg = JSON.parse( readFileSync( join( here, '..', 'static', 'meshes.json' ), 'utf8' ) );
-		cfg.site = { ...cfg.site, ...site, hubspot: { portalId: '1', formGuid: 'test-form', endpoint: HUBSPOT, consentText: '', ...site.hubspot } };
+		cfg.site = { ...cfg.site, ...site, hubspot: { portalId: '1', formGuid: 'test-form', endpoint: HUBSPOT, formsHost: HUBSPOT, consentText: '', ...site.hubspot } };
 		if ( extraMesh ) cfg.meshes.push( { ...cfg.meshes[ 0 ], id: 'second', title: 'A second mesh', provider: 'Another provider', thumb: '' } );
 		req.respond( { status: 200, contentType: 'application/json', body: JSON.stringify( cfg ) } );
 
@@ -175,6 +187,28 @@ try {
 	check( s2.admitted === before.admitted + 3 && s2.busy === before.busy + 1, 'C: stats show 3 admitted, 1 turned away', JSON.stringify( { admitted: s2.admitted, busy: s2.busy } ) );
 	await c.ctx.close();
 
+	// ----- I. a form with only an email field (what the real form has): exactly that field is sent, once
+	const basic = await visitor( { site: { hubspot: { formGuid: 'email-only' } } } );
+	const before2 = leads.length;
+	await basic.fill( 'basic@example.com', 'Bea', 'Basic Co' );
+	await basic.until( 'capacity page', async () => /capacity/.test( await basic.text( 'startTitle' ) ), 20000 );
+	const tries = leads.slice( before2 ), kept = tries.at( - 1 );
+	check( tries.length === 1 && ! kept.error && Object.keys( kept.f ).join() === 'email' && kept.f.email === 'basic@example.com',
+		'I: for a form with only an email field, the form definition is read and only the email is sent', JSON.stringify( tries.map( t => Object.keys( t.f ) ) ) );
+	check( /pinellas/.test( kept.context.pageName ) && /capacity/.test( kept.context.pageName ) && /Bea \(Basic Co\)/.test( kept.context.pageName ),
+		'I: mesh, outcome, name and company are in the submission page name', kept.context.pageName );
+	await basic.ctx.close();
+
+	// ----- J. the form definition cannot be read: smaller shapes are offered until one is accepted
+	const blind = await visitor( { site: { hubspot: { formGuid: 'no-definition' } } } );
+	const before3 = leads.length;
+	await blind.fill( 'blind@example.com', 'Jo', '' );
+	await blind.until( 'capacity page', async () => /capacity/.test( await blind.text( 'startTitle' ) ), 20000 );
+	const tries3 = leads.slice( before3 );
+	check( tries3.length === 3 && tries3[ 0 ].error === 'FIELD_NOT_IN_FORM_DEFINITION' && tries3[ 1 ].error === 'FIELD_NOT_IN_FORM_DEFINITION' && ! tries3[ 2 ].error && Object.keys( tries3[ 2 ].f ).join() === 'email',
+		'J: without a readable definition, the lead is re-sent in smaller shapes until accepted', JSON.stringify( tries3.map( t => Object.keys( t.f ).length ) ) );
+	await blind.ctx.close();
+
 	// ----- E. the Worker is unreachable (what the free plan's daily stop looks like)
 	const e = await visitor( { block: /127\.0\.0\.1:8787/ } );
 	await e.fill( 'down@example.com', 'Eve' );
@@ -186,7 +220,7 @@ try {
 	check( ( await fetch( `${WORKER}/stats?key=wrong` ) ).status === 404 && ( await fetch( `${WORKER}/stats` ) ).status === 404, 'F: /stats without the key is a 404' );
 	check( typeof s2.tiles?.miss === 'number', 'F: tile cache counters are reported', JSON.stringify( s2.tiles ) );
 
-	check( [ a, d, g, c, e ].every( v => v.errors.length === 0 ), 'no page errors in any visit', [ a, d, g, c, e ].flatMap( v => v.errors ).join( ' | ' ).slice( 0, 200 ) );
+	check( [ a, d, g, c, e, basic, blind ].every( v => v.errors.length === 0 ), 'no page errors in any visit', [ a, d, g, c, e, basic, blind ].flatMap( v => v.errors ).join( ' | ' ).slice( 0, 200 ) );
 
 	// ----- H. phone mode. An ordinary automated browser: it skips the gate and takes no
 	// admission, which is what is wanted now that the day is full.
