@@ -37,12 +37,17 @@ site.privacyUrl                 linked from the lead form when set
 site.hubspot.portalId/formGuid  lead capture; an empty formGuid turns the gate OFF
 site.hubspot.consentText        sent as GDPR consent text if the portal requires it
 site.errorTarget                tile detail; site.tileBudget / tileHardStop: see Capacity
-meshes[]: id, title, provider, place, blurb, thumb, routes?, routeCache?, sceneUrl?
+meshes[]: id, title, provider, place, blurb, thumb?, routes?, routeCache?, sceneUrl?, unlisted?
 ```
 
 **Add a mesh:** add an entry to `meshes[]`, add its tileset URL under the same id to the
 Worker's `TILESETS` secret (and `tilesets.local.json`), run `node test/thumbs.mjs` for its
-thumbnail, push. With two or more meshes the start screen shows the gallery.
+thumbnail, push. With two or more listed meshes the start screen shows the gallery.
+
+**Unlisted meshes:** `"unlisted": true` keeps a mesh out of the gallery and out of the
+default; it loads only from a link that names it (`?mesh=<id>`), and needs no thumbnail.
+This keeps it off the site, not secret: the id is in this public file. The Iowa mesh
+(`johnston`, 2.7 km x 2 km, 68 routes in `static/routes/johnston.geojson`) is unlisted.
 
 **View in ArcGIS Online:** every mesh gets this button. It opens ArcGIS Online's Scene
 Viewer with the mesh as a 3D Tiles layer:

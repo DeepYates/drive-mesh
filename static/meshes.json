@@ -23,6 +23,15 @@
       "blurb": "About 500 m of road, sidewalk and street furniture.",
       "thumb": "thumbs/pinellas.jpg",
       "routeCache": true
+    },
+    {
+      "id": "johnston",
+      "title": "Suburban street network",
+      "provider": "DeepWalk Drive",
+      "place": "Johnston, Iowa",
+      "blurb": "About 2.7 km by 2 km of streets, with 68 driven routes.",
+      "routes": true,
+      "unlisted": true
     }
   ]
 }

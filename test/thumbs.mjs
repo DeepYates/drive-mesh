@@ -83,6 +83,6 @@ for ( const mesh of meshes ) {
 
 }
 
-for ( const mesh of meshes ) await shoot( mesh, 960, 540, `thumbs/${mesh.id}.jpg` );
+for ( const mesh of meshes.filter( m => m.thumb ) ) await shoot( mesh, 960, 540, `thumbs/${mesh.id}.jpg` );
 await shoot( meshes[ 0 ], 1200, 630, 'og.jpg', { brand: 'DEEPWALK', title: site.title || 'Drive the mesh' } );
 await browser.close();

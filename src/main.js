@@ -592,9 +592,9 @@ function wireBar() {
 	const sceneUrl = mesh.sceneUrl ?? ( API ? `https://www.arcgis.com/home/webscene/viewer.html?url=${encodeURIComponent( `${TILES_BASE}${mesh.id}/tileset.json` )}` : '' );
 	if ( sceneUrl ) { $( 'arcgis' ).href = sceneUrl; $( 'arcgis' ).hidden = false; }
 	const home = new URL( location.href );
-	if ( meshCount > 1 ) home.searchParams.delete( 'mesh' );
+	if ( meshCount > 1 && ! mesh.unlisted ) home.searchParams.delete( 'mesh' );      // an unlisted mesh keeps its link
 	home.searchParams.delete( 'room' ); home.searchParams.set( 'pick', '1' );
-	$( 'change' ).href = home.href; $( 'change' ).textContent = meshCount > 1 ? 'Change mesh or car' : 'Change car'; $( 'change' ).hidden = false;
+	$( 'change' ).href = home.href; $( 'change' ).textContent = meshCount > 1 && ! mesh.unlisted ? 'Change mesh or car' : 'Change car'; $( 'change' ).hidden = false;
 
 	// "Invite": a link to a fresh private room on this mesh. The inviter moves into it too.
 	const invite = $( 'invite' );

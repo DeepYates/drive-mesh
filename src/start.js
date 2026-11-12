@@ -88,18 +88,23 @@ export async function start( { params, asset, api } ) {
 	const cfg = await fetch( asset( './meshes.json' ) ).then( r => r.ok ? r.json() : Promise.reject( new Error( `meshes.json ${r.status}` ) ) );
 	const site = cfg.site ?? {}, meshes = cfg.meshes ?? [];
 	if ( ! meshes.length ) throw new Error( 'no meshes are configured' );
+	// An unlisted mesh ("unlisted": true) is never offered: not in the gallery, not as the
+	// default. It loads only for a link that names it (?mesh=<id>). That keeps it off the
+	// site, not secret - its id is in this public file.
+	const listed = meshes.filter( m => ! m.unlisted );
 	const byId = id => meshes.find( m => m.id === id );
 	let mesh = byId( params.get( 'mesh' ) ) ?? null;
+	if ( ! mesh && ! listed.length ) throw new Error( 'no mesh is available without a link' );
 
 	// The test scripts drive an automated browser: nobody to ask, nothing to send, no place taken.
-	if ( navigator.webdriver ) return { mesh: mesh ?? meshes[ 0 ], site, meshCount: meshes.length, name: tidy( params.get( 'name' ), 40 ),
+	if ( navigator.webdriver ) return { mesh: mesh ?? listed[ 0 ], site, meshCount: listed.length, name: tidy( params.get( 'name' ), 40 ),
 		car: isCar( params.get( 'car' ) ) ? params.get( 'car' ) : DEFAULT_CAR };
 
 	const gateOn = !! site.hubspot?.formGuid;
 	flushQueue( site, api );
 	let lead = gateOn ? savedLead() : null;
 	let car = isCar( get( CAR_KEY ) ) ? get( CAR_KEY ) : DEFAULT_CAR;
-	const chosen = mesh ?? ( meshes.length === 1 ? meshes[ 0 ] : null );
+	const chosen = mesh ?? ( listed.length === 1 ? listed[ 0 ] : null );
 
 	return new Promise( resolve => {
 
@@ -140,7 +145,7 @@ export async function start( { params, asset, api } ) {
 			u.searchParams.set( 'mesh', mesh.id ); u.searchParams.delete( 'pick' );
 			history.replaceState( null, '', u );       // the address now names the mesh, so it can be shared
 			box.hidden = true;
-			resolve( { mesh, site, meshCount: meshes.length, name, car } );
+			resolve( { mesh, site, meshCount: listed.length, name, car } );
 			return 'in';
 
 		};
@@ -159,7 +164,7 @@ export async function start( { params, asset, api } ) {
 		$( 'startTitle' ).textContent = site.title || 'Drive the mesh';
 		$( 'startPitch' ).textContent = site.pitch || '';
 		const list = $( 'meshes' );
-		list.hidden = meshes.length < 2;
+		list.hidden = listed.length < 2 || !! mesh?.unlisted;      // a link to an unlisted mesh goes to that mesh, no choosing
 		const pick = m => {
 
 			mesh = m;
@@ -167,7 +172,7 @@ export async function start( { params, asset, api } ) {
 
 		};
 
-		for ( const m of meshes ) {
+		for ( const m of listed ) {
 
 			const card = document.createElement( 'button' );
 			card.type = 'button'; card.className = 'mesh'; card.dataset.id = m.id; card.setAttribute( 'role', 'radio' );
@@ -186,7 +191,7 @@ export async function start( { params, asset, api } ) {
 
 		}
 
-		pick( chosen ?? meshes[ 0 ] );
+		pick( chosen ?? listed[ 0 ] );
 
 		// the car picker
 		const garage = $( 'cars' );
