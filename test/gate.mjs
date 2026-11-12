@@ -9,6 +9,9 @@
 // with TILES_BASE=http://127.0.0.1:8787/tiles/; and server.py on 8600 serving static/.
 // Run it once per `wrangler dev` start: it uses up the day's three admissions.
 //
+// The live site uses HubSpot's own embedded form; that needs real HubSpot, so here the embed
+// is switched off (hubspot.embed: false) and the fallback path - this page's own fields,
+// posted to the form API - is what runs.
 // HubSpot is played by a stand-in server here (port 8790) that enforces the two rules that
 // matter: fields not on the form are rejected, and a blocked address is refused.
 import puppeteer from 'puppeteer-core';
@@ -76,7 +79,7 @@ async function visitor( { site = {}, block = null, query = '', extraMesh = false
 		if ( block && block.test( req.url() ) && req.method() !== 'OPTIONS' ) return req.abort();
 		if ( ! req.url().endsWith( '/meshes.json' ) ) return req.continue();
 		const cfg = JSON.parse( readFileSync( join( here, '..', 'static', 'meshes.json' ), 'utf8' ) );
-		cfg.site = { ...cfg.site, ...site, hubspot: { portalId: '1', formGuid: 'test-form', endpoint: HUBSPOT, formsHost: HUBSPOT, consentText: '', ...site.hubspot } };
+		cfg.site = { ...cfg.site, ...site, hubspot: { portalId: '1', formGuid: 'test-form', endpoint: HUBSPOT, formsHost: HUBSPOT, consentText: '', embed: false, ...site.hubspot } };
 		if ( extraMesh ) cfg.meshes.push( { ...cfg.meshes[ 0 ], id: 'second', title: 'A second mesh', provider: 'Another provider', thumb: '' } );
 		req.respond( { status: 200, contentType: 'application/json', body: JSON.stringify( cfg ) } );
 

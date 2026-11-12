@@ -101,6 +101,10 @@
     border: 1px solid rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .07); }
   .field small { opacity: .65; }
   .pair { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 12px; }
+  /* HubSpot's embedded form: its own styling assumes a light page */
+  .hsform { background: #fff; color: #1b2430; border-radius: 10px; padding: 14px 16px 6px; min-height: 60px; }
+  .hsform iframe { width: 100% !important; }
+  #hsWait { margin: 0; opacity: .7; }
   #gateGo { justify-self: start; min-height: 46px; padding: 0 28px; border: 0; border-radius: 10px; font-size: 16px; font-weight: 700;
     background: var(--gold); color: #14181d; cursor: pointer; }
   #gateGo:disabled { opacity: .6; cursor: progress; }
@@ -188,6 +192,7 @@
           <input id="gateCompany" type="text" autocomplete="organization" maxlength="80">
         </div>
       </div>
+      <div id="hsForm" class="hsform" hidden><p id="hsWait" hidden>Loading the form…</p></div>
       <p id="gateKnown" hidden>Driving as <b id="gateWho"></b>. <button id="gateNotMe" type="button">Not you?</button></p>
       <p id="gateNote">Other drivers see only your name. We use your email to follow up about this demo.
         <a id="gatePrivacy" target="_blank" rel="noopener" hidden>Privacy policy</a></p>

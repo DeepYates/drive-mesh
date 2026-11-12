@@ -67,7 +67,18 @@ With `site.hubspot.formGuid` set, a visitor must give a work email and a name be
 driving; company is optional. Order: form → `POST /enter` (admission) → HubSpot → drive, or
 the capacity page. The lead reaches HubSpot either way.
 
-**The HubSpot form** (legacy editor, reCAPTCHA off) is "Drive Mesh" form
+**The email step is HubSpot's own embedded form** (`hbspt.forms.create`, rendered into the
+start screen). HubSpot's script submits it, so it records like any form on the website.
+Posting to the form's API from the page was tried first: HubSpot answered "200 OK" and then
+discarded or spam-filed every submission. The game starts when HubSpot reports the
+submission went through (`onFormSubmitted`). The page's own email and company fields, and
+the API path described below, are only the fallback for a browser that blocks HubSpot's
+script (`site.hubspot.embed: false` forces the fallback; the tests use it). With the embed,
+the mesh and outcome are not sent: HubSpot records the page address and title itself. The
+form's button label and fields are whatever the form has in HubSpot; if it has a First
+name field, that is the name shown on the car.
+
+**The HubSpot form** (legacy editor, reCAPTCHA off) is "DeepWalk Drive Game" form
 `242060b0-0bed-4978-8941-515a68cc9616` in portal 46598388. Its id is in
 `site.hubspot.formGuid` and in `HUBSPOT_FORM` in `worker/wrangler.toml`. Fields the game can fill:
 

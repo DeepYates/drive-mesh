@@ -9,7 +9,7 @@
 // Without one, only an optional display name is asked for - there would be nowhere to send
 // an email. It runs in the browser, so someone determined can step around it; it is a prompt
 // for interested people, not access control.
-import { alreadySent, flushQueue, forgetLead, savedLead, saveLead, sendLead } from './lead.js';
+import { alreadySent, flushQueue, forgetLead, markSent, savedLead, saveLead, sendLead } from './lead.js';
 import { CARS, DEFAULT_CAR, isCar } from './cars.js';
 
 const PASS_KEY = 'driveMeshPass', NAME_KEY = 'driveMeshName', CAR_KEY = 'driveMeshCar';
@@ -36,6 +36,50 @@ async function admit( api, mesh ) {
 		return { ok: false };      // unreachable: the free plan's daily stop looks like this
 
 	}
+
+}
+
+/**
+ * HubSpot's own embedded form, rendered into #hsForm. Resolves with the submitted values
+ * once HubSpot reports the submission went through; rejects if its script is blocked or the
+ * form never appears (the caller then falls back to this page's own fields). HubSpot's
+ * script reports progress as window messages of type 'hsFormCallback'.
+ */
+function hubspotForm( hs, onReady ) {
+
+	return new Promise( ( resolve, reject ) => {
+
+		let ready = false;
+		const values = {};
+		const timer = setTimeout( () => { if ( ! ready ) reject( new Error( 'the HubSpot form did not load' ) ); }, 8000 );
+		addEventListener( 'message', e => {
+
+			const d = e.data;
+			if ( ! d || d.type !== 'hsFormCallback' || d.id !== hs.formGuid ) return;
+			if ( d.eventName === 'onFormReady' && ! ready ) { ready = true; clearTimeout( timer ); onReady(); }
+			if ( d.eventName === 'onFormSubmit' && Array.isArray( d.data ) ) for ( const f of d.data ) values[ f.name ] = f.value;
+			if ( d.eventName === 'onFormSubmitted' ) resolve( { ...values, ...( d.data?.submissionValues ?? {} ) } );
+
+		} );
+		const script = document.createElement( 'script' );
+		script.src = 'https://js.hsforms.net/forms/embed/v2.js'; script.charset = 'utf-8';
+		script.onerror = () => { clearTimeout( timer ); reject( new Error( 'the HubSpot form script was blocked' ) ); };
+		script.onload = () => {
+
+			try {
+
+				window.hbspt.forms.create( { portalId: hs.portalId, formId: hs.formGuid, region: hs.region || 'na1', target: '#hsForm' } );
+
+			} catch ( err ) {
+
+				clearTimeout( timer ); reject( err );
+
+			}
+
+		};
+		document.head.append( script );
+
+	} );
 
 }
 
@@ -179,15 +223,39 @@ export async function start( { params, asset, api } ) {
 
 		};
 
+		// The email step is HubSpot's own embedded form. This page's email and company fields
+		// and its Drive button stay hidden while it loads, and come back only if it cannot
+		// load (script blocked): then the lead goes through sendLead instead.
+		let embedStarted = false;
+		const useEmbed = () => {
+
+			if ( ! gateOn || lead || site.hubspot.embed === false || embedStarted ) return false;
+			embedStarted = true;
+			const slot = $( 'hsForm' ), waiting = $( 'hsWait' );
+			const own = on => { fields.email.parentElement.hidden = fields.company.parentElement.hidden = button.hidden = ! on; fields.email.required = fields.name.required = on; };
+			own( false ); slot.hidden = false; waiting.hidden = false;
+			hubspotForm( site.hubspot, () => { waiting.hidden = true; } ).then( async values => {
+
+				// a first name on the HubSpot form, if it has that field, is the name on the car
+				const candidate = { email: tidy( values.email, 120 ).toLowerCase(), name: tidy( values.firstname || fields.name.value, 40 ) || 'Guest', company: tidy( values.company, 80 ) };
+				if ( candidate.email ) markSent( candidate, mesh.id );      // HubSpot has it: do not send it again
+				slot.hidden = true;
+				if ( await enter( candidate ) === 'in' ) $( 'overlay' ).classList.remove( 'hidden' );
+
+			} ).catch( () => { slot.hidden = waiting.hidden = true; own( true ); } );
+			return true;
+
+		};
+
 		fields.email.required = fields.name.required = gateOn;
 		fields.name.value = get( NAME_KEY );
-		if ( lead ) { $( 'gateWho' ).textContent = lead.name; showFields( false ); } else showFields( true );
-		$( 'gateNotMe' ).addEventListener( 'click', () => { forgetLead(); lead = null; showFields( true ); fields.email.focus(); } );
+		if ( lead ) { $( 'gateWho' ).textContent = lead.name; showFields( false ); } else { showFields( true ); useEmbed(); }
+		$( 'gateNotMe' ).addEventListener( 'click', () => { forgetLead(); lead = null; showFields( true ); if ( ! useEmbed() ) fields.email.focus(); } );
 		if ( site.privacyUrl ) { $( 'gatePrivacy' ).href = site.privacyUrl; $( 'gatePrivacy' ).hidden = false; }
 
 		box.hidden = false;
 		$( 'overlay' ).classList.add( 'hidden' );
-		if ( ! lead ) ( gateOn ? fields.email : fields.name ).focus( { preventScroll: true } );
+		if ( ! lead ) ( gateOn && ! embedStarted ? fields.email : fields.name ).focus( { preventScroll: true } );
 
 		form.addEventListener( 'submit', async e => {
 

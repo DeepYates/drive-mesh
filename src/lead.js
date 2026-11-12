@@ -1,5 +1,11 @@
 // Lead capture: the visitor's details go to a HubSpot form, and nowhere else.
 //
+// The normal route is HubSpot's own embedded form on the start screen (start.js): HubSpot's
+// script submits it, with the tracking and anti-spam tokens its filter expects. Posting to
+// the form's API from this page was tried first and HubSpot answered "200 OK" and then
+// discarded or spam-filed every submission. What follows is therefore only the FALLBACK,
+// for a browser that blocks HubSpot's script (and for the tests, which use a stand-in):
+//
 // Path 1: the browser posts straight to HubSpot's public form endpoint (CORS-enabled, no
 //         secret; the portal and form ids are public by design).
 // Path 2: ad blockers often block hsforms.com, so a network failure retries through the
@@ -30,6 +36,9 @@ const write = ( key, value ) => { try { localStorage.setItem( key, JSON.stringif
 export const savedLead = () => { const l = read( LEAD_KEY, null ); return l && l.email && l.name ? l : null; };
 export const saveLead = lead => write( LEAD_KEY, lead );
 export const forgetLead = () => { try { localStorage.removeItem( LEAD_KEY ); } catch { /* private window */ } };
+
+/** Record that HubSpot has this email for this mesh (its own embedded form submitted it). */
+export const markSent = ( lead, mesh ) => write( SENT_KEY, [ ...read( SENT_KEY, [] ), `${lead.email}|${mesh}` ].slice( - 40 ) );
 
 /** Has this browser already told HubSpot about this mesh for this email? */
 export const alreadySent = ( lead, mesh ) => read( SENT_KEY, [] ).includes( `${lead.email}|${mesh}` );
