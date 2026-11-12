@@ -11,8 +11,8 @@
       "consentText": ""
     },
     "errorTarget": 10,
-    "tileBudget": 800,
-    "tileHardStop": 1000
+    "tileBudget": 1600,
+    "tileHardStop": 2000
   },
   "meshes": [
     {

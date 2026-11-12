@@ -1,7 +1,7 @@
 // Admission gate + daily numbers. One instance for the whole site (idFromName('gate')).
 //
-// The demo runs on the Workers Free plan, sized for DAILY_USERS visitors a day (100): each
-// visitor needs up to ~800 tile requests and the plan allows 100,000 a day. This object
+// The demo runs on the Workers Free plan, sized for DAILY_USERS visitors a day (50): each
+// visitor may use up to 2,000 tile requests and the plan allows 100,000 a day. This object
 // counts admissions per UTC day and says "busy" past the limit, so the allowance runs out
 // gracefully (a branded page) instead of abruptly (broken tiles). It is called once per new
 // visitor and once per ~100 tile requests, never per tile - its own allowance is 100,000 too.
@@ -62,7 +62,7 @@ export class Gate extends DurableObject {
 
 	limit() {
 
-		return Math.max( 0, Number( this.env.DAILY_USERS ) || 100 );
+		return Math.max( 0, Number( this.env.DAILY_USERS ) || 50 );
 
 	}
 
