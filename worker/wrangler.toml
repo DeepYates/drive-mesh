@@ -24,7 +24,7 @@ MULTIPLAYER = "on"
 # Players per room; one more gets "room full" and plays alone.
 MAX_PLAYERS = "8"
 # New visitors admitted per UTC day; the next one sees the "at capacity" page. 25 visitors
-# x up to 2,000 tile requests each is 50,000 - half the Free plan's 100,000 requests a day.
+# x up to 4,000 tile requests each is the Free plan's 100,000 requests a day.
 DAILY_USERS = "25"
 # HubSpot form that /lead forwards to (public ids, not secrets). Empty = /lead answers 503.
 HUBSPOT_PORTAL = "46598388"

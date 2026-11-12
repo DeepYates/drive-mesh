@@ -631,7 +631,7 @@ function nudge( kind, message ) {
 // ---------- tile budget ----------
 // Every tile fetched over the network is one request against the Worker's daily allowance
 // (100,000 on the free plan), and the demo is sized for 25 visitors a day, each with
-// 2,000 network tiles a day (50,000 at most: half the allowance). Past `tileBudget` the mesh drops to lower detail;
+// 4,000 network tiles a day (100,000 at most: the whole allowance). Past `tileBudget` the mesh drops to lower detail;
 // past `tileHardStop` streaming stops, and what is loaded stays drivable. Tiles served from
 // the browser's own cache are free and are not counted (transferSize is 0).
 //
@@ -645,7 +645,7 @@ const budget = { day: new Date().toISOString().slice( 0, 10 ), n: 0 };
 
 function watchTileBudget() {
 
-	const soft = site.tileBudget || 1600, hard = site.tileHardStop || 2000;
+	const soft = site.tileBudget || 3200, hard = site.tileHardStop || 4000;
 	try { const b = JSON.parse( localStorage.getItem( BUDGET_KEY ) ); if ( b?.day === budget.day ) budget.n = b.n; } catch { /* private window */ }
 	const apply = () => {
 

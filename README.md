@@ -99,11 +99,11 @@ The site is sized for **25 new visitors a day** (`DAILY_USERS` in `worker/wrangl
   Measured on the Pinellas mesh: ~250 tiles to spawn, then ~1.5 per metre, so a 320 m route
   is ~750 and all three routes ~1,200. Detail level, view distance and ancestor/sibling
   loading each changed that by under 15% — it is set by how finely the mesh is tiled. Each
-  visitor gets `tileBudget` (1,600) network tiles a day at full detail and `tileHardStop`
-  (2,000) in total; then streaming stops and what is loaded stays drivable. Tiles from the
-  browser's cache (kept 30 days) are not counted. **25 visitors x 2,000 tiles is 50,000,
-  half the daily allowance**: 2,000 is enough for every route of one mesh, or the first route
-  of two. Visitors x tiles must stay at or under 100,000 on the free plan.
+  visitor gets `tileBudget` (3,200) network tiles a day at full detail and `tileHardStop`
+  (4,000) in total; then streaming stops and what is loaded stays drivable. Tiles from the
+  browser's cache (kept 30 days) are not counted. **25 visitors x 4,000 tiles is the whole
+  daily allowance**: 4,000 is enough for every route of about three meshes like this one.
+  Visitors x tiles must stay at or under 100,000 on the free plan.
 - **Limits against abuse:** only the Pages origin may call the Worker; per-IP rate limits
   (tiles 5,000/min, about five cars at speed behind one address; rooms 40/min; forms 20/min; approximate); rooms hold 8 players, accept
   15 messages/s per socket, drop sockets silent for 5 min, and hibernate when quiet;
