@@ -133,9 +133,10 @@ a "Take the wheel" button, uses coarser tile detail and a compact HUD.
 
 ## Satellite basemap
 
-Esri World Imagery under and around the mesh (`buildBasemap`): one flat quad, set just below
-the road where the car spawns, loaded by the browser straight from Esri with attribution on
-screen. On hilly captures it will sit above or below the mesh away from the spawn point.
+Esri World Imagery under and around the mesh (`buildBasemap`): one flat quad, loaded by the
+browser straight from Esri with attribution on screen. It is drawn as a backdrop (its depth
+is pinned just in front of the sky), so the mesh always shows over it however the ground
+rises and falls; its height follows the ground under the car so it lines up through holes.
 
 ## How the driving works
 

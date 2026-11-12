@@ -313,8 +313,7 @@ async function boot() {
 // the real surroundings instead of flat grey. The tiles covering the mesh (plus a margin)
 // are composited into ONE canvas texture on ONE quad: a square kilometre is small enough
 // that Web Mercator is affine to within centimetres, and one draw call beats a mesh per tile.
-// The quad is flat; trySpawn sets its height just under the road where the car lands, so
-// the mesh always draws on top of it. Loaded by the browser straight from Esri (no proxy,
+// The quad is flat and is drawn as a backdrop: the mesh always draws on top of it. Loaded by the browser straight from Esri (no proxy,
 // nothing counted against the Worker). `?sat=0` turns it off.
 const SAT_URL = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile';
 const SAT_MARGIN = 250, SAT_MAX_TILES = 9, SAT_DROP = 0.3;
@@ -354,7 +353,18 @@ function buildBasemap( [ west, south, east, north ] ) {
 		...corner( x0, y0 ), ...corner( x1 + 1, y0 ), ...corner( x0, y1 + 1 ), ...corner( x1 + 1, y1 + 1 ) ], 3 ) );    // NW NE SW SE
 	geo.setAttribute( 'uv', new THREE.Float32BufferAttribute( [ 0, 1, 1, 1, 0, 0, 1, 0 ], 2 ) );
 	geo.setIndex( [ 0, 2, 1, 1, 2, 3 ] );
-	basemap = new THREE.Mesh( geo, new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } ) );
+	// The quad is flat and the ground is not, so wherever the mesh dips below it the imagery
+	// would cover the mesh. Its depth is therefore pinned just in front of the sky: every real
+	// surface (mesh, cars) is nearer and draws over it, whatever the two heights are, and it
+	// still hides the sky dome's flat ground colour. Its height only decides where the picture
+	// lands on screen; tick() keeps that at the ground under the car.
+	const mat = new THREE.MeshBasicMaterial( { map: tex, color: 0xd4d8da } );
+	mat.onBeforeCompile = shader => {
+
+		shader.fragmentShader = shader.fragmentShader.replace( '#include <fog_fragment>', '#include <fog_fragment>\n\tgl_FragDepth = 0.999999;' );
+
+	};
+	basemap = new THREE.Mesh( geo, mat );
 	basemap.visible = false;    // until trySpawn knows the ground height
 	scene.add( basemap );
 	$( 'attrib' ).hidden = false;
@@ -1121,6 +1131,8 @@ function tick() {
 	if ( state === 'driving' ) {
 
 		net.send( car, carBraking, now );
+		// the satellite picture follows the ground under the car (see buildBasemap)
+		if ( basemap ) basemap.position.y += ( car.pos.y + CAR_GROUND_Y - SAT_DROP - basemap.position.y ) * Math.min( 1, dt * 2 );
 		if ( ( driveTime += dt ) > 90 ) nudge( 'time', 'Like what you see? We can mesh your streets too.' );
 
 	}
