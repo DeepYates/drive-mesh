@@ -20,9 +20,10 @@ const options = {
 	bundle: true,
 	format: 'esm',
 	target: 'es2022',
-	// Where the page fetches the tileset. Relative = resolved against the bundle's URL (the
-	// local server.py proxy); a hosted build passes the tile proxy Worker's absolute URL.
-	define: { __TILESET_URL__: JSON.stringify(process.env.TILESET_URL || './tiles/tileset.json') },
+	// Where the page fetches tiles: <base><mesh id>/tileset.json. Relative = resolved against
+	// the bundle's URL (the local server.py proxy); a hosted build passes the Worker's
+	// absolute .../tiles/ URL, which also tells the page where the Worker's other routes are.
+	define: { __TILES_BASE__: JSON.stringify((process.env.TILES_BASE || './tiles/').replace(/\/?$/, '/')) },
 	minify: !process.argv.includes('--watch'),
 	sourcemap: true,
 	logLevel: 'info',

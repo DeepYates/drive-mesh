@@ -4,19 +4,25 @@
 
 Serves ``game/static`` and two data endpoints:
 
-* ``/tiles/<path>``  - read-only proxy to the DeepWalk 3D Tiles service. The upstream URL
-  carries an API key (the ``dw_live_...`` path segment), so the browser only ever sees
-  ``/tiles/...``; the key stays in this process. Tiles are immutable (they live under a
-  timestamped directory), so they are cached on disk in ``game/.cache/tiles``; the root
-  ``tileset.json`` is re-fetched after ROOT_TTL seconds.
+* ``/tiles/<mesh>/<path>``  - read-only proxy to the DeepWalk 3D Tiles service, one upstream
+  per mesh id (the ids in ``static/meshes.json``). The upstream URLs carry an API key (the
+  ``dw_live_...`` path segment), so the browser only ever sees ``/tiles/...``; the key stays
+  in this process. Tiles are immutable (they live under a timestamped directory), so they
+  are cached on disk in ``game/.cache/tiles/<mesh>``; each root ``tileset.json`` is
+  re-fetched after ROOT_TTL seconds.
 * ``/routes.geojson`` - the driven routes (``vroom.pack_versions.display_route`` export).
 
-The tileset URL comes from ``$DRIVE_MESH_TILESET_URL`` or, failing that, the first line of
-``game/tileset_url.local.txt`` (keep that file out of version control).
+The tileset URLs come from ``game/tilesets.local.json`` (``{"<mesh id>": "<.../tileset.json>"}``).
+Without that file every mesh id maps to the single URL in ``$DRIVE_MESH_TILESET_URL`` or the
+first line of ``game/tileset_url.local.txt``. Keep both files out of version control.
+
+There is no Worker here, so the admission gate, lead fallback and multiplayer are off.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import threading
 import time
@@ -29,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 STATIC = HERE / "static"
 CACHE = HERE / ".cache" / "tiles"
 URL_FILE = HERE / "tileset_url.local.txt"
+MAP_FILE = HERE / "tilesets.local.json"
 ROUTES = Path(os.environ.get(
     "DRIVE_ROUTES_GEOJSON",
     HERE.parent / "exports" / "pack_versions_display_route_01a182ef-b809-76c1-8600-933613e21deb.geojson"))
@@ -47,19 +54,24 @@ def tileset_url() -> str:
     return url
 
 
-UPSTREAM = ""  # set in main(): the tileset URL minus "tileset.json"
+UPSTREAMS: dict[str, str] = {}  # set in main(): mesh id -> tileset URL minus "tileset.json"
+FALLBACK = ""                    # the single-URL upstream, used for any mesh id when there is no map
 
 
-def fetch_tile(rel: str) -> bytes:
-    """Return the tile bytes for a path relative to the tileset root (disk-cached)."""
-    dest = CACHE / rel
+def upstream_for(mesh: str) -> str:
+    return UPSTREAMS.get(mesh) or FALLBACK
+
+
+def fetch_tile(mesh: str, rel: str) -> bytes:
+    """Return the tile bytes for a path relative to that mesh's tileset root (disk-cached)."""
+    dest = CACHE / mesh / rel
     is_root = rel == "tileset.json"
     with _locks_guard:
-        lock = _locks.setdefault(rel, threading.Lock())
+        lock = _locks.setdefault(f"{mesh}/{rel}", threading.Lock())
     with lock:
         if dest.exists() and not (is_root and time.time() - dest.stat().st_mtime > ROOT_TTL):
             return dest.read_bytes()
-        req = urllib.request.Request(UPSTREAM + rel, headers={"User-Agent": "drive-mesh-game/0.1"})
+        req = urllib.request.Request(upstream_for(mesh) + rel, headers={"User-Agent": "drive-mesh-game/0.1"})
         with urllib.request.urlopen(req, timeout=60) as r:
             body = r.read()
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -98,12 +110,14 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path.startswith("/tiles/"):
-            rel = path[len("/tiles/"):]
+            mesh, _, rel = path[len("/tiles/"):].partition("/")
             parts = rel.split("/")
             if not rel or any(p in ("", ".", "..") or ":" in p or "\\" in p for p in parts):
                 return self.send_error(400, "bad tile path")
+            if not re.fullmatch(r"[a-z0-9-]{1,40}", mesh) or not upstream_for(mesh):
+                return self.send_error(404, "unknown mesh")
             try:
-                body = fetch_tile(rel)
+                body = fetch_tile(mesh, rel)
             except urllib.error.HTTPError as e:
                 return self.send_error(e.code, "upstream error")
             except Exception as e:  # network trouble: report, never leak the upstream URL
@@ -130,8 +144,13 @@ class Server(ThreadingHTTPServer):
 
 
 def main() -> int:
-    global UPSTREAM
-    UPSTREAM = tileset_url().rsplit("/", 1)[0] + "/"
+    global FALLBACK
+    if MAP_FILE.exists():
+        for mesh, url in json.loads(MAP_FILE.read_text(encoding="utf-8")).items():
+            if url.endswith("/tileset.json"):
+                UPSTREAMS[mesh] = url.rsplit("/", 1)[0] + "/"
+    if not UPSTREAMS:
+        FALLBACK = tileset_url().rsplit("/", 1)[0] + "/"
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8600
     if not (STATIC / "bundle.js").exists():
         print("note: static/bundle.js is missing - run `npm run build` in game/ first")

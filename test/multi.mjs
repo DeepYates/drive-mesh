@@ -24,7 +24,7 @@ async function player( name ) {
 	const problems = [];
 	page.on( 'console', m => [ 'error', 'warning' ].includes( m.type() ) && problems.push( m.text().slice( 0, 200 ) ) );
 	page.on( 'pageerror', e => problems.push( 'pageerror ' + e.message.slice( 0, 200 ) ) );
-	await page.goto( `${BASE}?room=${ROOM}&email=${name.toLowerCase()}@test.dev`, { waitUntil: 'load' } );
+	await page.goto( `${BASE}?room=${ROOM}&name=Driver%20${name}&car=${name === 'A' ? 'truck' : 'suv'}`, { waitUntil: 'load' } );
 	const g = expr => page.evaluate( `(() => { const g = window.__game; return ${expr}; })()` );
 	return { name, browser, page, g, problems };
 
@@ -54,8 +54,10 @@ try {
 	const na = await a.g( 'g.net' ), nb = await b.g( 'g.net' );
 	check( na.status === 'online' && nb.status === 'online' && na.id !== nb.id, 'both online with different ids', `A=${na.id} B=${nb.id} room=${na.url}` );
 
-	await until( 'names to arrive', async () => ( await a.g( 'g.net.peers[0].name' ) ) === 'b@test.dev' && ( await b.g( 'g.net.peers[0].name' ) ) === 'a@test.dev', 10000 );
-	check( true, 'each sees the other player email label' );
+	await until( 'names to arrive', async () => ( await a.g( 'g.net.peers[0].name' ) ) === 'Driver B' && ( await b.g( 'g.net.peers[0].name' ) ) === 'Driver A', 10000 );
+	check( true, 'each sees the other player name label' );
+	await until( 'car models to load', async () => { const p = ( await b.g( 'g.net.peers' ) )[ 0 ]; return p.car === 'truck' && p.carLoaded && ( await a.g( 'g.net.peers' ) )[ 0 ].car === 'suv' && ( await a.g( 'g.net.carLoaded' ) ); }, 20000 );
+	check( true, 'each sees the other player chosen car model (A: pickup, B: SUV)' );
 	await sleep( 1500 );
 	await a.page.screenshot( { path: join( out, 'multi_A_view.png' ) } );
 	await b.page.screenshot( { path: join( out, 'multi_B_view.png' ) } );

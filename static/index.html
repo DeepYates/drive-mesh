@@ -2,17 +2,32 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Drive Mesh</title>
-<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drive the mesh · DeepWalk</title>
+<meta name="description" content="Drive through street-level 3D meshes in your browser and judge the quality for yourself. A DeepWalk demo.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Drive the mesh · DeepWalk">
+<meta property="og:description" content="Drive through street-level 3D meshes in your browser and judge the quality for yourself.">
+<meta property="og:url" content="https://deepyates.github.io/drive-mesh/">
+<meta property="og:image" content="https://deepyates.github.io/drive-mesh/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0d1117">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1117'/%3E%3Cpath d='M6 20l3-7a3 3 0 0 1 2.8-2h8.4A3 3 0 0 1 23 13l3 7v4h-3v-2H9v2H6z' fill='%23ffd166'/%3E%3Ccircle cx='10.5' cy='19.5' r='1.6' fill='%230d1117'/%3E%3Ccircle cx='21.5' cy='19.5' r='1.6' fill='%230d1117'/%3E%3C/svg%3E">
 <link rel="modulepreload" href="./bundle.js">
 <style>
   /* No backdrop-filter on the panels: blurring what is behind them means re-blurring the
      WebGL canvas on every frame, which costs more than the HUD is worth on integrated GPUs. */
+  :root { --ink: #eef2f6; --panel: rgba(13, 17, 23, .74); --line: rgba(255, 255, 255, .09); --gold: #ffd166; --night: #0d1117; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #c4d6e6;
-    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: #eef2f6; }
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif; color: var(--ink); }
   canvas { display: block; }
-  .panel { position: fixed; background: rgba(13, 17, 23, .74); border: 1px solid rgba(255, 255, 255, .09);
+  [hidden] { display: none !important; }
+  a { color: inherit; }
+  button, input { font: inherit; }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 12px 16px; box-shadow: 0 6px 24px rgba(0, 0, 0, .22); }
   #hud { left: 16px; bottom: 16px; min-width: 200px; }
   #speed { font: 700 46px/1 ui-sans-serif, system-ui, sans-serif; font-variant-numeric: tabular-nums;
@@ -20,11 +35,11 @@
   #speed + small { opacity: .6; margin-left: 7px; letter-spacing: .12em; font-weight: 600; }
   #status { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .1);
     opacity: .88; font-variant-numeric: tabular-nums; }
-  #status b { color: #ffd166; font-weight: 600; }
-  .warn { color: #ffd166; font-weight: 600; }
+  #status b { color: var(--gold); font-weight: 600; }
+  .warn { color: var(--gold); font-weight: 600; }
   #help { right: 16px; bottom: 16px; opacity: .92; }
   #help div { display: flex; align-items: baseline; gap: 12px; }
-  #help b { flex: 0 0 62px; color: #ffd166; font-weight: 600; letter-spacing: .04em; }
+  #help b { flex: 0 0 62px; color: var(--gold); font-weight: 600; letter-spacing: .04em; }
   #map { right: 16px; top: 16px; padding: 6px; }
   #minimap { display: block; }
   #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 16px; align-items: center;
@@ -32,28 +47,96 @@
     pointer-events: none; transition: opacity .45s ease; }
   #overlay.hidden { opacity: 0; }
   #overlay::before { content: ""; width: 34px; height: 34px; border-radius: 50%;
-    border: 3px solid rgba(255, 255, 255, .22); border-top-color: #ffd166; animation: spin .9s linear infinite; }
+    border: 3px solid rgba(255, 255, 255, .22); border-top-color: var(--gold); animation: spin .9s linear infinite; }
   #overlay.hidden::before, #overlay.failed::before { animation: none; }
   #overlay.failed::before { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #who { left: 50%; top: 24%; transform: translateX(-50%); width: min(380px, calc(100vw - 64px)); z-index: 2;
-    background: rgba(13, 17, 23, .94); padding: 18px 20px; }
-  #who[hidden], #attrib[hidden] { display: none; }
-  #who label { display: block; font-size: 15px; font-weight: 600; margin-bottom: 10px; }
-  #who .row { display: flex; gap: 8px; }
-  #who input { flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .08); color: #fff; }
-  #who input:focus-visible { outline: 2px solid #ffd166; outline-offset: 1px; }
-  #who button { font: inherit; font-weight: 700; padding: 8px 16px; border: 0; border-radius: 8px;
-    background: #ffd166; color: #14181d; cursor: pointer; }
-  #whoHint { margin: 10px 0 0; opacity: .75; }
-  #whoHint.warn { opacity: 1; }
   #attrib { position: fixed; left: 50%; bottom: 6px; transform: translateX(-50%); font-size: 11px;
     color: rgba(255, 255, 255, .8); text-shadow: 0 1px 2px rgba(0, 0, 0, .7); pointer-events: none; white-space: nowrap; }
-  @media (max-width: 760px) { #help { display: none; } }
+
+  /* top bar: call to action, invite, mesh switcher */
+  #bar { position: fixed; left: 16px; top: 16px; display: flex; flex-wrap: wrap; gap: 8px; max-width: calc(100vw - 300px); }
+  .pill { display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none;
+    font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, .18); }
+  .pill:hover { background: rgba(13, 17, 23, .9); }
+  .pill.primary { background: var(--gold); border-color: var(--gold); color: #14181d; }
+  .pill.primary:hover { background: #ffdc85; }
+
+  /* one-time prompt */
+  #nudge { left: 50%; bottom: 34px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
+    max-width: min(560px, calc(100vw - 32px)); background: rgba(13, 17, 23, .92); }
+  #nudge p { margin: 0; flex: 1; }
+  #nudgeClose { border: 0; background: none; color: var(--ink); opacity: .7; cursor: pointer; padding: 6px; font-size: 16px; line-height: 1; }
+
+  /* start screen */
+  #start { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; overflow: auto; padding: 24px 16px;
+    background: linear-gradient(180deg, rgba(13, 17, 23, .86), rgba(13, 17, 23, .93)); }
+  .sheet { width: min(620px, 100%); }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    font-size: 12px; color: #fff; }
+  .brand img { display: block; }
+  #startTitle { margin: 10px 0 6px; font-size: clamp(30px, 6vw, 46px); line-height: 1.05; letter-spacing: -.02em; color: #fff; text-wrap: balance; }
+  #startPitch { margin: 0 0 18px; font-size: 16px; line-height: 1.55; opacity: .86; max-width: 52ch; }
+  #meshes { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .mesh { display: flex; flex-direction: column; gap: 2px; padding: 0 0 10px; text-align: left; color: var(--ink); cursor: pointer;
+    background: rgba(255, 255, 255, .05); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .mesh img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: rgba(255, 255, 255, .06); margin-bottom: 8px; }
+  .mesh span { padding: 0 12px; }
+  .mesh .provider { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--gold); }
+  .mesh .title { font-size: 15px; font-weight: 600; color: #fff; }
+  .mesh .place, .mesh .blurb { opacity: .75; }
+  .mesh[aria-checked="true"] { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); background: rgba(255, 209, 102, .08); }
+  .step { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+  #cars { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-bottom: 20px; }
+  .car { display: grid; justify-items: center; gap: 2px; padding: 6px 4px 8px; color: var(--ink); cursor: pointer; font-size: 12px;
+    background: rgba(255, 255, 255, .06); border: 1px solid var(--line); border-radius: 10px; }
+  .car img { width: 100%; height: auto; aspect-ratio: 8 / 5; object-fit: contain; border-radius: 7px;
+    background: linear-gradient(180deg, #e6ebf1, #b7c1cd); }
+  .car[aria-checked="true"] { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); background: rgba(255, 209, 102, .1); }
+  #gate { display: grid; gap: 12px; }
+  .field { display: grid; gap: 5px; min-width: 0; }
+  .field label { font-weight: 600; }
+  .field input { min-width: 0; width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 16px; border-radius: 9px; color: #fff;
+    border: 1px solid rgba(255, 255, 255, .22); background: rgba(255, 255, 255, .07); }
+  .field small { opacity: .65; }
+  .pair { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 12px; }
+  #gateGo { justify-self: start; min-height: 46px; padding: 0 28px; border: 0; border-radius: 10px; font-size: 16px; font-weight: 700;
+    background: var(--gold); color: #14181d; cursor: pointer; }
+  #gateGo:disabled { opacity: .6; cursor: progress; }
+  #gateError { margin: 0; color: #ffb4a8; font-weight: 600; }
+  #gateError:empty { display: none; }
+  #gateNote, #gateKnown { margin: 0; opacity: .72; }
+  #gateNotMe { border: 0; background: none; color: var(--gold); text-decoration: underline; cursor: pointer; padding: 0; }
+
+  /* phones: on-screen controls, compact HUD */
+  #touch button { position: fixed; bottom: calc(22px + env(safe-area-inset-bottom)); width: 68px; height: 68px; border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, .25); background: rgba(13, 17, 23, .6); color: #fff; font-size: 26px;
+    touch-action: none; user-select: none; -webkit-user-select: none; }
+  #touch button.held { background: var(--gold); color: #14181d; }
+  #touchLeft { left: 16px; } #touchRight { left: 96px; } #touchBrake { right: 96px; } #touchGas { right: 16px; }
+  #takeWheel { position: fixed; left: 50%; bottom: calc(34px + env(safe-area-inset-bottom)); transform: translateX(-50%); }
+  body.touch #help { display: none; }
+  body.touch #hud { left: 12px; top: 64px; bottom: auto; min-width: 0; padding: 8px 12px; }
+  body.touch #speed { font-size: 30px; }
+  body.touch #map { transform: scale(.6); transform-origin: top right; right: 10px; top: 10px; }
+  body.touch #nudge { bottom: calc(104px + env(safe-area-inset-bottom)); }
+  body.touch #attrib { bottom: 2px; font-size: 9px; }
+  @media (max-width: 760px) {
+    #help { display: none; }
+    #bar { left: 10px; top: 10px; max-width: calc(100vw - 170px); }
+    .pair { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { #overlay { transition: none; } #overlay::before { animation: none; } }
 </style>
 </head>
 <body>
+<nav id="bar" hidden aria-label="Demo links">
+  <a id="cta" class="pill primary" target="_blank" rel="noopener" hidden></a>
+  <button id="invite" class="pill" type="button" hidden>Invite a colleague</button>
+  <a id="arcgis" class="pill" target="_blank" rel="noopener" hidden>View in ArcGIS Online</a>
+  <a id="change" class="pill" hidden>Change mesh</a>
+</nav>
 <div id="hud" class="panel">
   <span id="speed">0</span><small>MPH</small>
   <div id="status"></div>
@@ -67,16 +150,53 @@
   <div><b>C</b> camera</div>
   <div><b>P</b> autopilot</div>
 </div>
+<div id="touch" hidden>
+  <button id="touchLeft" type="button" aria-label="Steer left">◀</button>
+  <button id="touchRight" type="button" aria-label="Steer right">▶</button>
+  <button id="touchBrake" type="button" aria-label="Brake and reverse">▼</button>
+  <button id="touchGas" type="button" aria-label="Accelerate">▲</button>
+</div>
+<button id="takeWheel" class="pill primary" type="button" hidden>Take the wheel</button>
+<div id="nudge" class="panel" role="status" hidden>
+  <p id="nudgeText"></p>
+  <a id="nudgeCta" class="pill primary" target="_blank" rel="noopener"></a>
+  <button id="nudgeClose" type="button" aria-label="Dismiss">✕</button>
+</div>
 <div id="overlay"><span id="overlayText">Starting…</span></div>
-<form id="who" class="panel" hidden>
-  <label for="whoEmail">Your email</label>
-  <div class="row">
-    <input id="whoEmail" type="text" inputmode="email" autocomplete="email" maxlength="64" placeholder="you@example.com">
-    <button type="submit">Drive</button>
-  </div>
-  <p id="whoHint">Shown above your car to everyone driving here. Leave it blank to drive without one.</p>
-</form>
 <div id="attrib" hidden>Imagery © Esri, Maxar, Earthstar Geographics</div>
+
+<main id="start" hidden>
+  <div class="sheet">
+    <div class="brand"><img src="./brand/mark.png" alt="" width="26" height="26">DeepWalk</div>
+    <h1 id="startTitle"></h1>
+    <p id="startPitch"></p>
+    <div id="meshes" role="radiogroup" aria-label="Choose a mesh"></div>
+    <h2 class="step">Choose your car</h2>
+    <div id="cars" role="radiogroup" aria-label="Choose your car"></div>
+    <form id="gate" novalidate>
+      <div class="pair">
+        <div class="field">
+          <label for="gateEmail">Work email</label>
+          <input id="gateEmail" type="email" inputmode="email" autocomplete="email" maxlength="120" placeholder="you@company.com">
+        </div>
+        <div class="field">
+          <label for="gateName">Name on your car</label>
+          <input id="gateName" type="text" autocomplete="given-name" maxlength="40" placeholder="Alex">
+        </div>
+        <div class="field">
+          <label for="gateCompany">Company <small>(optional)</small></label>
+          <input id="gateCompany" type="text" autocomplete="organization" maxlength="80">
+        </div>
+      </div>
+      <p id="gateKnown" hidden>Driving as <b id="gateWho"></b>. <button id="gateNotMe" type="button">Not you?</button></p>
+      <p id="gateNote">Other drivers see only your name. We use your email to follow up about this demo.
+        <a id="gatePrivacy" target="_blank" rel="noopener" hidden>Privacy policy</a></p>
+      <p id="gateError" role="alert"></p>
+      <button id="gateGo" type="submit">Drive</button>
+    </form>
+    <p id="startBusy" hidden><a id="busyCta" class="pill primary" target="_blank" rel="noopener">Talk to DeepWalk</a></p>
+  </div>
+</main>
 <script type="module" src="./bundle.js"></script>
 </body>
 </html>

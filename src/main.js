@@ -9,6 +9,9 @@ import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree, MeshBVH } fro
 import { makeFrame } from './geo.js';
 import { CAR, Vehicle } from './vehicle.js';
 import { Net } from './net.js';
+import { start } from './start.js';
+import { initTouch, isTouch } from './touch.js';
+import { buildCar, disposeCar, isCar, DEFAULT_CAR, LIVERIES, SCALE as CAR_SCALE, WHEEL_RADIUS as CAR_WHEEL_RADIUS } from './cars.js';
 
 // Wheel and obstacle rays hit ~25k-triangle tiles every frame. Brute force cost 17 ms/frame;
 // a per-tile BVH makes each ray a few dozen tests. Trees are built in workers, and only for
@@ -20,11 +23,13 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const USE_BVH = new URLSearchParams( location.search ).get( 'bvh' ) !== '0';
 
 // Every URL is resolved against this bundle's own URL, never the site root, so the page works
-// under any base path (GitHub Pages serves it from /<repo>/). __TILESET_URL__ is set at build
-// time (build.mjs, $TILESET_URL): './tiles/tileset.json' for the local server.py proxy, or
-// the absolute URL of the tile proxy Worker for a hosted build.
+// under any base path (GitHub Pages serves it from /<repo>/). __TILES_BASE__ is set at build
+// time (build.mjs, $TILES_BASE): './tiles/' for the local server.py proxy, or the Worker's
+// absolute .../tiles/ URL for a hosted build. A mesh's tileset is <base><mesh id>/tileset.json.
+// API is the Worker's root (admission, leads, rooms), or null when there is no Worker.
 const asset = path => new URL( path, import.meta.url ).href;
-const TILESET = asset( __TILESET_URL__ );
+const TILES_BASE = asset( __TILES_BASE__ );
+const API = /^https?:/.test( __TILES_BASE__ ) ? new URL( '/', TILES_BASE ).href : null;
 const SUBSTEP = 1 / 120;
 const MPH = 2.23694;
 const $ = id => document.getElementById( id );
@@ -151,7 +156,8 @@ let lastInput = { throttle: 0, steer: 0, brake: 0, handbrake: false };
 // Multiplayer (src/net.js): other players' cars, drawn with the same model in another colour.
 let net = new Net( null ), carBraking = false;
 const peerMeshes = new Map();
-const PEER_COLORS = [ 0x2f7fd8, 0x35a35a, 0xf2c230, 0x8e55c9, 0x22b3b8, 0xe0619a, 0xdfe3e8, 0x8a5a2b ];
+// Other players are told apart by livery (cars.js): 1..3 by player id; 0 is the visitor's own.
+const peerLivery = id => LIVERIES[ 1 + ( id - 1 ) % ( LIVERIES.length - 1 ) ];
 
 function newStats() {
 
@@ -162,7 +168,6 @@ function newStats() {
 }
 
 // ---------- boot ----------
-boot().catch( fail );
 
 function fail( err ) {
 
@@ -175,9 +180,12 @@ function fail( err ) {
 
 async function boot() {
 
+	const TILESET = `${TILES_BASE}${mesh.id}/tileset.json`;
+	// A mesh may ship a route export (meshes.json: "routes": true -> routes/<id>.geojson);
+	// without one the roads are found in the mesh itself (stepScan).
 	const [ ts, gj ] = await Promise.all( [
 		fetch( TILESET ).then( r => r.ok ? r.json() : Promise.reject( new Error( `tileset ${r.status}` ) ) ),
-		fetch( asset( './routes.geojson' ) ).then( r => r.ok ? r.json() : { features: [] } ),
+		mesh.routes ? fetch( asset( `./routes/${mesh.id}.geojson` ) ).then( r => r.ok ? r.json() : { features: [] } ) : { features: [] },
 	] );
 
 	// Local frame at the centre of the root bounding region (radians, metres).
@@ -218,7 +226,9 @@ async function boot() {
 		dracoLoader,
 		ktxLoader: new KTX2Loader().setTranscoderPath( asset( './libs/basis/' ) ).detectSupport( renderer ),
 	} ) );
-	tiles.errorTarget = Number( params.get( 'error' ) ) || 10;
+	// Screen-space error in pixels: lower = sharper and more tiles. Phones get a coarser
+	// mesh (smaller screens, mobile data); `?error=` overrides both.
+	tiles.errorTarget = Number( params.get( 'error' ) ) || ( site.errorTarget || 10 ) * ( touch ? 1.6 : 1 );
 	tiles.setCamera( camera );
 	tiles.setResolutionFromRenderer( camera, renderer );
 	tiles.addEventListener( 'load-error', () => stats.tilesFailed ++ );
@@ -260,19 +270,22 @@ async function boot() {
 	scene.add( tiles.group );
 	if ( USE_BVH ) startBvhWorkers( 2 );
 
-	// Multiplayer needs the hosted tile proxy (the rooms live on the same Worker), so it is on
-	// only when the tileset URL is absolute; `?mp=0` turns it off, `?room=<name>` picks a
-	// private room. The mesh's timestamp folder is part of the room name: positions are in a
-	// frame derived from the tileset, so two versions of the mesh must never share a room.
-	if ( /^https?:/.test( __TILESET_URL__ ) && params.get( 'mp' ) !== '0' ) {
+	// Multiplayer needs the Worker (the rooms live there), so it is on only for a hosted
+	// build; `?mp=0` turns it off, `?room=<name>` picks a private room. The mesh id and its
+	// timestamp folder are part of the room name: positions are in a frame derived from the
+	// tileset, so two meshes - or two versions of one - must never share a room.
+	if ( API && params.get( 'mp' ) !== '0' ) {
 
 		const clean = ( s, n ) => String( s ?? '' ).toLowerCase().replace( /[^a-z0-9-]/g, '' ).slice( 0, n );
-		const stamp = clean( String( ts.root.children?.[ 0 ]?.content?.uri ?? '' ).split( '/' )[ 0 ], 20 ) || 'mesh';
-		const room = `${clean( params.get( 'room' ), 16 ) || 'lobby'}-${stamp}`;
-		net = new Net( new URL( `/room/${room}`, __TILESET_URL__ ).href.replace( /^http/, 'ws' ) );
-		net.setName( myName );
+		const stamp = clean( String( ts.root.children?.[ 0 ]?.content?.uri ?? '' ).split( '/' )[ 0 ], 13 ) || 'mesh';
+		const room = `${clean( params.get( 'room' ), 12 ) || 'lobby'}-${clean( mesh.id, 12 )}-${stamp}`;    // <= 39 characters
+		net = new Net( new URL( `room/${room}`, API ).href.replace( /^http/, 'ws' ) );
+		net.setName( myName, myCar );
 
 	}
+
+	watchTileBudget();
+	wireBar();
 
 	buildBasemap( ts.root.boundingVolume.region );
 
@@ -417,46 +430,148 @@ function placeLabel( mesh, pos, visible ) {
 
 }
 
-// ---------- who is driving ----------
-// A prompt for the player's email, shown above their car to everyone in the room. Blank is
-// allowed (no label). Remembered in this browser only; the server never stores it.
-const EMAIL_KEY = 'driveMeshEmail';
-let myName = '';
+// ---------- chosen car models ----------
+// Every car starts as the built-in box car (buildCarMesh) and is swapped for the chosen
+// model once it has loaded, so a slow or failed download never leaves a player without a car.
+// The model's origin is on the ground; CAR_GROUND_Y is where the ground sits below the
+// physics body's centre with the suspension at its resting sag.
+const CAR_GROUND_Y = CAR.wheels[ 0 ].y - ( CAR.restLength - 0.11 ) - CAR.wheelRadius;
 
-function askEmail() {
+async function attachCarModel( mesh, carId, livery ) {
 
-	const apply = value => {
+	const wanted = mesh.carWanted = `${carId}|${livery.paint}`;
+	let car;
+	try {
 
-		myName = value.trim().slice( 0, 64 );
-		try { localStorage.setItem( EMAIL_KEY, myName ); } catch { /* private window */ }
-		setLabel( carMesh, myName );
-		net.setName( myName );
+		car = await buildCar( carId, livery, asset );
 
-	};
-	// `?email=` presets it; an automated browser (the test scripts) has nobody to ask.
-	if ( params.has( 'email' ) || navigator.webdriver ) return apply( params.get( 'email' ) ?? '' );
+	} catch ( err ) {
 
-	const box = $( 'who' ), input = $( 'whoEmail' ), hint = $( 'whoHint' );
-	try { input.value = localStorage.getItem( EMAIL_KEY ) ?? ''; } catch { /* private window */ }
-	box.hidden = false;
-	input.focus();
-	box.addEventListener( 'submit', e => {
+		console.warn( 'car model unavailable, keeping the built-in car:', err.message );
+		return;
 
-		e.preventDefault();
-		const v = input.value.trim();
-		if ( v && ! /^\S+@\S+\.\S+$/.test( v ) ) {
+	}
 
-			hint.textContent = 'That does not look like an email address. Fix it, or leave it blank.';
-			hint.classList.add( 'warn' );
-			return;
+	if ( mesh.carWanted !== wanted || mesh.gone ) return disposeCar( car );    // superseded while loading
+	if ( mesh.model ) { mesh.root.remove( mesh.model.group ); disposeCar( mesh.model ); }
+	for ( const child of mesh.root.children ) child.visible = false;            // the built-in car's parts
+	car.group.position.y = CAR_GROUND_Y;
+	mesh.root.add( car.group );
+	mesh.model = car;
+
+}
+
+/** Pose a chosen model's wheels: `lengths` are suspension lengths per wheel (null = at rest). */
+function poseModelWheels( mesh, lengths, steer ) {
+
+	// the visual wheel is bigger than the physics one, so it turns proportionally slower;
+	// the model is yawed 180 degrees under the root, which reverses the spin axis
+	const spin = - mesh.spin * CAR.wheelRadius / CAR_WHEEL_RADIUS;
+	CAR.wheels.forEach( ( w, i ) => {
+
+		const node = mesh.model.wheels[ i ];
+		if ( lengths ) node.position.y = ( w.y - lengths[ i ] - CAR.wheelRadius + CAR_WHEEL_RADIUS - CAR_GROUND_Y ) / CAR_SCALE;
+		node.rotation.set( spin, w.front ? steer : 0, 0 );
+
+	} );
+
+}
+
+// ---------- site furniture ----------
+// Set by start(): the mesh being driven, the site config (meshes.json) and the display name.
+let mesh = null, site = {}, meshCount = 1, myName = '', myCar = DEFAULT_CAR, touch = false, driveTime = 0, firstDrive = true;
+const esc = s => String( s ?? '' ).replace( /[&<>"]/g, c => ( { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } )[ c ] );
+
+/** Top bar: call to action, invite link, mesh switcher (and the ArcGIS link when a mesh has one). */
+function wireBar() {
+
+	const cta = $( 'cta' );
+	cta.textContent = site.ctaLabel || 'Talk to DeepWalk'; cta.href = site.ctaUrl || '#'; cta.hidden = ! site.ctaUrl;
+	$( 'nudgeCta' ).textContent = cta.textContent; $( 'nudgeCta' ).href = cta.href; $( 'nudgeCta' ).hidden = ! site.ctaUrl;
+	if ( mesh.sceneUrl ) { $( 'arcgis' ).href = mesh.sceneUrl; $( 'arcgis' ).hidden = false; }
+	const home = new URL( location.href );
+	if ( meshCount > 1 ) home.searchParams.delete( 'mesh' );
+	home.searchParams.delete( 'room' ); home.searchParams.set( 'pick', '1' );
+	$( 'change' ).href = home.href; $( 'change' ).textContent = meshCount > 1 ? 'Change mesh or car' : 'Change car'; $( 'change' ).hidden = false;
+
+	// "Invite": a link to a fresh private room on this mesh. The inviter moves into it too.
+	const invite = $( 'invite' );
+	invite.hidden = ! API;
+	invite.addEventListener( 'click', async () => {
+
+		const u = new URL( location.href );
+		u.searchParams.set( 'mesh', mesh.id );
+		u.searchParams.set( 'room', Math.random().toString( 36 ).slice( 2, 8 ) );
+		try {
+
+			if ( navigator.share && touch ) await navigator.share( { title: document.title, url: u.href } );
+			else { await navigator.clipboard.writeText( u.href ); invite.textContent = 'Link copied'; }
+
+		} catch {
+
+			return;      // share sheet dismissed or clipboard refused: stay where we are
 
 		}
 
-		apply( v );
-		box.hidden = true;
-		input.blur();
+		setTimeout( () => { location.href = u.href; }, 900 );
 
 	} );
+	$( 'nudgeClose' ).addEventListener( 'click', () => { $( 'nudge' ).hidden = true; } );
+	$( 'bar' ).hidden = false;
+
+}
+
+/** A one-time, dismissible prompt above the HUD. */
+const nudged = new Set();
+function nudge( kind, message ) {
+
+	if ( nudged.has( kind ) || ( kind === 'time' && ! site.ctaUrl ) ) return;
+	nudged.add( kind );
+	$( 'nudgeText' ).textContent = message;
+	$( 'nudge' ).hidden = false;
+
+}
+
+// ---------- tile budget ----------
+// Every tile fetched over the network is one request against the Worker's daily allowance
+// (100,000 on the free plan), and the demo is sized for 100 visitors a day - so each visitor
+// gets about 1,000 network tiles a day. Past `tileBudget` the mesh drops to lower detail;
+// past `tileHardStop` streaming stops, and what is loaded stays drivable. Tiles served from
+// the browser's own cache are free and are not counted (transferSize is 0).
+//
+// Measured on the Pinellas mesh: ~250 tiles to spawn, then ~1.5 per metre driven, so a
+// 320 m route is ~750. Detail level, view distance and ancestor/sibling loading were each
+// tried and none moved that by more than ~15%: the count is set by how finely the mesh is
+// tiled. Only the hard stop really limits requests; the low-detail step saves little.
+// This is honour-system accounting: bypassing it costs availability, never money.
+const BUDGET_KEY = 'driveMeshTiles';
+const budget = { day: new Date().toISOString().slice( 0, 10 ), n: 0 };
+
+function watchTileBudget() {
+
+	const soft = site.tileBudget || 800, hard = site.tileHardStop || 1000;
+	try { const b = JSON.parse( localStorage.getItem( BUDGET_KEY ) ); if ( b?.day === budget.day ) budget.n = b.n; } catch { /* private window */ }
+	const apply = () => {
+
+		if ( budget.n >= hard ) { tiles.downloadQueue.maxJobs = 0; nudge( 'hard', 'That is the limit of new terrain for this demo today. What you have loaded stays drivable.' ); }
+		else if ( budget.n >= soft ) { tiles.errorTarget = Math.max( tiles.errorTarget, 40 ); nudge( 'soft', 'You have covered a lot of ground. The mesh is at lower detail for the rest of today.' ); }
+
+	};
+	apply();
+	try {
+
+		new PerformanceObserver( list => {
+
+			let n = 0;
+			for ( const e of list.getEntries() ) if ( e.name.startsWith( TILES_BASE ) && e.transferSize > 0 ) n ++;
+			if ( ! n ) return;
+			budget.n += n;
+			try { localStorage.setItem( BUDGET_KEY, JSON.stringify( budget ) ); } catch { /* private window */ }
+			apply();
+
+		} ).observe( { type: 'resource', buffered: true } );
+
+	} catch { /* no resource timing: no budget, the Worker's own limits still apply */ }
 
 }
 
@@ -858,6 +973,9 @@ function trySpawn() {
 	camera.position.copy( car.pos ).addScaledVector( car.fwd, - 8 ).add( new THREE.Vector3( 0, 3, 0 ) );
 	spawnPending = null;
 	state = 'driving';
+	// A phone starts as a passenger: autopilot drives until the visitor touches a control.
+	if ( firstDrive && touch && ! auto.on ) { startAutopilot( routeIdx, 9, false ); $( 'takeWheel' ).hidden = false; }
+	firstDrive = false;
 
 }
 
@@ -1000,7 +1118,13 @@ function tick() {
 	}
 
 	syncCarMesh( dt );
-	if ( state === 'driving' ) net.send( car, carBraking, now );
+	if ( state === 'driving' ) {
+
+		net.send( car, carBraking, now );
+		if ( ( driveTime += dt ) > 90 ) nudge( 'time', 'Like what you see? We can mesh your streets too.' );
+
+	}
+
 	syncPeerMeshes( dt, now );
 	syncVoidFloor( dt );
 	const t2 = performance.now();
@@ -1236,6 +1360,8 @@ function syncCarMesh( dt ) {
 
 	}
 
+	if ( carMesh.model ) poseModelWheels( carMesh, car.wheels.map( w => w.length ), car.steer );
+
 	const braking = carBraking = lastInput.handbrake || lastInput.brake > 0 ||
 		( lastInput.throttle < 0 && car.speed > 0.5 ) || ( lastInput.throttle > 0 && car.speed < - 0.5 );
 	carMesh.tail.emissiveIntensity = braking ? 3.2 : 0.5;
@@ -1261,7 +1387,7 @@ function syncPeerMeshes( dt, now ) {
 		let m = peerMeshes.get( p.id );
 		if ( ! m ) {
 
-			m = buildCarMesh( PEER_COLORS[ ( p.id - 1 ) % PEER_COLORS.length ] );
+			m = buildCarMesh( new THREE.Color( peerLivery( p.id ).paint ).getHex() );
 			m.root.visible = m.shadow.visible = true;    // buildCarMesh makes both hidden
 			m.shadow.material.opacity = 0.4;
 			scene.add( m.root, m.shadow );
@@ -1279,6 +1405,9 @@ function syncPeerMeshes( dt, now ) {
 
 		} );
 		m.tail.emissiveIntensity = p.braking ? 3.2 : 0.5;
+		// their chosen car arrives with their name; until it has loaded they drive the built-in one
+		if ( m.carId !== p.car ) { m.carId = p.car; if ( isCar( p.car ) ) attachCarModel( m, p.car, peerLivery( p.id ) ); }
+		if ( m.model ) poseModelWheels( m, null, p.steer );
 		_peerUp.set( 0, 1, 0 ).applyQuaternion( p.quat );
 		m.shadow.position.copy( p.pos ).addScaledVector( _peerUp, 0.04 - ( CAR.restLength - CAR.wheels[ 0 ].y + CAR.wheelRadius ) );
 		m.shadow.quaternion.copy( p.quat );
@@ -1291,6 +1420,8 @@ function syncPeerMeshes( dt, now ) {
 
 		if ( live.has( id ) ) continue;
 		setLabel( m, '' );
+		m.gone = true;
+		if ( m.model ) { m.root.remove( m.model.group ); disposeCar( m.model ); m.model = null; }
 		scene.remove( m.root, m.shadow );
 		m.root.traverse( o => { o.geometry?.dispose(); o.material?.dispose?.(); } );
 		m.shadow.geometry.dispose(); m.shadow.material.map.dispose(); m.shadow.material.dispose();
@@ -1349,9 +1480,11 @@ function drawHud() {
 	for ( const w of car.wheels ) if ( ! w.onMesh ) off ++;
 	setText( 'speed', String( Math.round( Math.abs( car.speed ) * MPH ) ) );
 	setText( 'status',
-		`route ${routeIdx + 1}/${routes.length} · ${( routes[ routeIdx ]?.length ?? 0 ).toFixed( 0 )} m` +
-		`<br>tiles ${t.visible ?? '–'} shown · ${loading} loading · ${Math.round( fps )} fps` +
-		( net.status === 'online' ? `<br>${peerPoses.length + 1} online` : net.status === 'full' ? '<br>room full · driving solo' : '' ) +
+		`<b>${esc( mesh.provider )}</b> · ${esc( mesh.place )}<br>` +
+		// a phone's HUD is small: the route and streaming numbers are left out there
+		( touch ? '' : `route ${routeIdx + 1}/${routes.length} · ${( routes[ routeIdx ]?.length ?? 0 ).toFixed( 0 )} m` +
+		`<br>tiles ${t.visible ?? '–'} shown · ${loading} loading · ${Math.round( fps )} fps` ) +
+		( net.status === 'online' ? `${touch ? '' : '<br>'}${peerPoses.length + 1} online` : net.status === 'full' ? '<br>room full · driving solo' : '' ) +
 		( auto.on ? `<br><b>autopilot</b> ${( stats.routeProgress * 100 ).toFixed( 0 )}%` : '' ) +
 		( off && state === 'driving' ? `<br><span class="warn">${off}/4 wheels off mesh</span>` : '' ), true );
 
@@ -1386,7 +1519,7 @@ function drawHud() {
 	for ( const p of peerPoses ) {
 
 		mctx.beginPath(); mctx.arc( mx( p.pos.x ), mz( p.pos.z ), 3.5, 0, 2 * Math.PI );
-		mctx.fillStyle = '#' + PEER_COLORS[ ( p.id - 1 ) % PEER_COLORS.length ].toString( 16 ).padStart( 6, '0' );
+		mctx.fillStyle = peerLivery( p.id ).paint;
 		mctx.strokeStyle = '#fff'; mctx.lineWidth = 1; mctx.fill(); mctx.stroke();
 
 	}
@@ -1414,12 +1547,54 @@ function perfReport() {
 }
 
 // ---------- debug / test hooks ----------
+/**
+ * A studio picture of one car in the visitor's livery, as a PNG data URL with a transparent
+ * background. Used by test/thumbs.mjs to make the start screen's picker images.
+ */
+async function carShot( id, width = 480, height = 300 ) {
+
+	const car = await buildCar( id, LIVERIES[ 0 ], asset );
+	const studio = new THREE.Scene();
+	studio.environment = scene.environment;
+	const key = new THREE.DirectionalLight( 0xffffff, 2.8 ); key.position.set( - 3, 6, - 4 );
+	studio.add( car.group, key, new THREE.AmbientLight( 0xffffff, 1.1 ) );
+	const cam = new THREE.PerspectiveCamera( 26, width / height, 0.1, 60 );
+	cam.position.set( - 3.7, 2.3, - 4.5 );      // front three-quarter (the car faces -Z)
+	cam.lookAt( 0, 0.66, 0 );
+	const rt = new THREE.WebGLRenderTarget( width, height, { samples: 4 } );
+	const clear = renderer.getClearColor( new THREE.Color() ), alpha = renderer.getClearAlpha();
+	renderer.setRenderTarget( rt ); renderer.setClearColor( 0x000000, 0 ); renderer.clear();
+	renderer.render( studio, cam );
+	const px = new Uint8Array( width * height * 4 );
+	renderer.readRenderTargetPixels( rt, 0, 0, width, height, px );
+	renderer.setRenderTarget( null ); renderer.setClearColor( clear, alpha );
+	rt.dispose(); disposeCar( car );
+
+	// the target holds linear, premultiplied, bottom-up pixels: make them sRGB, straight, top-down
+	const c = document.createElement( 'canvas' );
+	c.width = width; c.height = height;
+	const ctx = c.getContext( '2d' ), out = ctx.createImageData( width, height );
+	const srgb = v => 255 * ( v <= 0.0031308 ? 12.92 * v : 1.055 * v ** ( 1 / 2.4 ) - 0.055 );
+	for ( let y = 0; y < height; y ++ ) for ( let x = 0; x < width; x ++ ) {
+
+		const s = ( ( height - 1 - y ) * width + x ) * 4, d = ( y * width + x ) * 4, a = px[ s + 3 ] / 255;
+		for ( let k = 0; k < 3; k ++ ) out.data[ d + k ] = a ? srgb( Math.min( 1, px[ s + k ] / 255 / a ) ) : 0;
+		out.data[ d + 3 ] = px[ s + 3 ];
+
+	}
+
+	ctx.putImageData( out, 0, 0 );
+	return c.toDataURL( 'image/png' );
+
+}
+
 window.__game = {
+	carShot,
 	/** multiplayer: connection status, own id, and where each peer is drawn right now */
 	get net() {
 
 		return { status: net.status, id: net.id, url: net.url,
-			name: myName, peers: peerPoses.map( p => ( { id: p.id, name: p.name, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
+			name: myName, car: myCar, carLoaded: !! carMesh.model, mesh: mesh?.id, tileBudget: { ...budget }, touch, peers: peerPoses.map( p => ( { id: p.id, name: p.name, car: p.car, carLoaded: !! peerMeshes.get( p.id )?.model, x: p.pos.x, y: p.pos.y, z: p.pos.z, speed: p.speed } ) ) };
 
 	},
 	get state() {
@@ -1562,5 +1737,23 @@ window.__game.debug = () => {
 
 };
 
-// Last, once every module-level binding above exists: ask who is driving (the mesh loads meanwhile).
-askEmail();
+// Last, once every module-level binding above exists: the start screen (mesh choice, lead
+// gate, admission), then the game. start() never resolves when the demo is at capacity.
+start( { params, asset, api: API } ).then( r => {
+
+	( { mesh, site } = r );
+	meshCount = r.meshCount; myName = r.name; myCar = r.car;
+	setLabel( carMesh, myName );
+	attachCarModel( carMesh, myCar, LIVERIES[ 0 ] );
+	touch = isTouch( params );
+	if ( touch ) {
+
+		const mine = () => { if ( auto.on ) stopAutopilot(); $( 'takeWheel' ).hidden = true; };
+		initTouch( keys, mine );
+		$( 'takeWheel' ).addEventListener( 'click', mine );
+
+	}
+
+	return boot();
+
+} ).catch( fail );

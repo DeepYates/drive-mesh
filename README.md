@@ -1,149 +1,181 @@
-# Drive Mesh — driving prototype
+# Drive Mesh
 
-Drive a car around the DeepWalk Drive 3D Tiles mesh in a browser. Built to answer one
-question: is the mesh drivable as-is? Single-player, local, no build server.
+Drive a car through DeepWalk 3D Tiles meshes in a browser. It began as a prototype to answer
+"is the mesh drivable as-is?" and is now also a marketing demo: a start screen with a mesh
+gallery, a car picker and a lead form, multiplayer, and a daily capacity limit.
 
-## Run
+Live: https://deepyates.github.io/drive-mesh/ (GitHub Pages) with a Cloudflare Worker
+(`worker/`) for tiles, rooms, admission and the lead fallback.
+
+## Run locally
 
 ```
-cd game
 npm install          # once
 npm run build        # bundles src/ -> static/bundle.js, copies the Draco + Basis decoders
 python server.py     # http://127.0.0.1:8600/
 ```
 
-The tileset URL comes from `$DRIVE_MESH_TILESET_URL` or the first line of
-`tileset_url.local.txt`. That URL contains the `dw_live_…` API key, so the file is in
-`.gitignore`; the browser only ever requests `/tiles/...` from the local server, which proxies
-(and disk-caches, in `.cache/tiles`) the real service. Routes come from
-`../exports/pack_versions_display_route_<project>.geojson` (override with
-`$DRIVE_ROUTES_GEOJSON`).
+`server.py` serves `static/` and proxies `/tiles/<mesh>/...` to the tile service, caching on
+disk in `.cache/tiles`. Tileset URLs carry the `dw_live_…` API key, so they live in
+git-ignored files: `tilesets.local.json` (`{"<mesh id>": "<.../tileset.json>"}`) or, for a
+single mesh, `tileset_url.local.txt`. With no Worker, there is no admission gate, lead
+fallback or multiplayer.
 
 Keys: `W A S D` / arrows drive · `Space` handbrake · `R` reset onto the route · `N` next route
-(`Shift+N` previous) · `C` camera · `P` autopilot. URL options: `?route=<n>` start route,
-`?error=<px>` tile detail (default 10; lower = sharper and heavier), `?bvh=0` disable the
-raycast BVH.
+· `C` camera · `P` autopilot. URL options: `?mesh=<id>`, `?room=<name>`, `?route=<n>`,
+`?error=<px>` tile detail (default 10; lower = sharper), `?sat=0` no satellite, `?mp=0` no
+multiplayer, `?touch=1` phone controls, `?pick=1` reopen the start screen, `?bvh=0`.
 
-## How it works
+## The site: `static/meshes.json`
 
-- **Tiles** — `3d-tiles-renderer` streams the tileset. The tiles *require* Draco geometry and
-  KTX2/Basis textures, so both decoders are wired in (`GLTFExtensionsPlugin`).
-- **Coordinates** (`src/geo.js`) — tiles are in Earth-centred coordinates, ~6.4e6 m from the
-  origin, which jitters at float precision. The tiles group is transformed into an
-  east-north-up frame at the mesh centre: `+X` east, `+Y` up, `-Z` north. Routes (lon/lat) go
-  through the same frame; their height comes from the mesh.
-- **Car** (`src/vehicle.js`) — a hand-rolled raycast vehicle: one rigid body, four
-  spring-damper suspension rays, friction-circle tyres, 120 Hz substeps. Collision is "what
-  you see": rays hit the tiles currently displayed, so there is no separate collision mesh.
-  Rays are cast once per frame and reduced to a contact plane per wheel.
-- **Raycast speed** — every tile gets a `three-mesh-bvh` tree when it loads. Without it the
-  7 rays per frame cost ~17 ms; with it ~0.3 ms.
-- **Holes and edges** — a wheel whose ray finds nothing keeps rolling on an invisible flat
-  patch at its last real ground height (a faint grid fades in to show it). One mechanism
-  covers holes, tiles that have not streamed in yet, and the edge of the capture.
-- **Spawning** — ground height is a vote across five rays (the mesh has fragments above and
-  below the road), ground is required under the whole car, and if a route starts before the
-  mesh does the spawn walks up the route until it finds some.
-- **Obstacles** — three horizontal rays at bumper height; faces steeper than ~60° stop the car.
-
-## Measuring drivability
-
-`P` (or `window.__game.startAutopilot(route, speed)`) runs a pure-pursuit driver along a route
-and collects telemetry, readable from `window.__game.report()`. `test/smoke.mjs` drives that
-headlessly through the installed Chrome:
+One file holds everything public about the site. No URLs with keys go in it.
 
 ```
-node test/smoke.mjs smoke                 # spawn, hold the throttle, screenshots in test/out
-node test/smoke.mjs auto 30 9             # one route at 9 m/s, with screenshots
-node test/smoke.mjs survey 9 0,2,6,13     # several routes -> test/out/survey_9.json
+site.title, site.pitch          start screen headline and text
+site.ctaLabel, site.ctaUrl      the "Talk to DeepWalk" button (bar, prompts, capacity page)
+site.privacyUrl                 linked from the lead form when set
+site.hubspot.portalId/formGuid  lead capture; an empty formGuid turns the gate OFF
+site.hubspot.consentText        sent as GDPR consent text if the portal requires it
+site.errorTarget                tile detail; site.tileBudget / tileHardStop: see Capacity
+meshes[]: id, title, provider, place, blurb, thumb, routes?, sceneUrl?
 ```
 
-Fields: `rmsAy` / `maxAy` vertical acceleration of the body (m/s², gravity removed),
-`offMeshWheel` share of wheel-frames with no mesh under the wheel, `allWheelsOff` share of
-frames with no mesh under any wheel, `crashes` obstacle hits above 1.5 m/s, `stalls` times the
-autopilot sat still for 5 s and was hopped 12 m up the route.
+**Add a mesh:** add an entry to `meshes[]`, add its tileset URL under the same id to the
+Worker's `TILESETS` secret (and `tilesets.local.json`), run `node test/thumbs.mjs` for its
+thumbnail, push. With two or more meshes the start screen shows the gallery. `sceneUrl`
+(optional) adds a "View in ArcGIS Online" button for that mesh.
 
-## Routes
+**Routes:** a mesh with `"routes": true` loads `static/routes/<id>.geojson`. Without one,
+the game surveys the mesh from above and uses the longest straight, level runs of ground as
+routes (`stepScan` in `src/main.js`); roads at an angle to the axes come out shorter.
 
-Routes that never enter the mesh are dropped. If none are left (no export, or an export for a
-different capture), the game surveys the mesh from above and uses the longest straight, level
-runs of ground as routes (`stepScan` in `src/main.js`) — in a street capture those are the
-roads. To use real routes on the hosted build, commit a matching `static/routes.geojson`.
+## Lead gate (`src/start.js`, `src/lead.js`)
 
-## Hosting (GitHub Pages + Cloudflare Worker)
+With `site.hubspot.formGuid` set, a visitor must give a work email and a name before
+driving; company is optional. Order: form → `POST /enter` (admission) → HubSpot → drive, or
+the capacity page. The lead reaches HubSpot either way.
 
-Pages serves `static/`; the tiles come from a Worker (`worker/`) that does what `server.py`'s
-`/tiles/` proxy does, with the tileset URL (and its API key) held as a Worker secret.
+**The HubSpot form must have exactly these fields, with reCAPTCHA off** (HubSpot rejects
+submissions containing any field that is not on the form):
 
-```
-cd worker
-npx wrangler login
-npx wrangler secret put TILESET_URL     # paste the full .../tileset.json URL
-npx wrangler deploy                     # prints https://drive-mesh-tiles.<you>.workers.dev
-```
+| Field | Type | Notes |
+|---|---|---|
+| `email` | built-in | |
+| `firstname` | built-in | the name shown above the car |
+| `company` | built-in | optional |
+| `drive_demo_mesh` | new contact property, single-line text | mesh id |
+| `drive_demo_outcome` | new contact property, single-line text | `played` or `at_capacity` |
 
-Then in the GitHub repo: Settings → Pages → Source = **GitHub Actions**, and Settings →
-Secrets and variables → Actions → Variables → `TILESET_URL` =
-`https://drive-mesh-tiles.<you>.workers.dev/tiles/tileset.json`. Every push to `main` runs
-`.github/workflows/pages.yml`, which builds with that URL baked in and publishes `static/`.
+Put the form's id in `site.hubspot.formGuid` and in `HUBSPOT_FORM` in `worker/wrangler.toml`.
 
-- Every URL in the page is resolved against the bundle's own URL, so it works under
-  `/<repo>/`. The tileset URL is the one build-time setting (`$TILESET_URL`, default
-  `./tiles/tileset.json` for `server.py`).
-- `ALLOWED_ORIGINS` in `worker/wrangler.toml` lists the sites allowed to use the proxy. A
-  custom domain or a different GitHub account means editing it and redeploying.
-- The Worker hides the key, not the data: anything it serves is effectively public.
+- The browser posts to `api.hsforms.com` directly. If that is blocked (ad blockers), it
+  retries through the Worker (`POST /lead`). If both fail, the visitor is let in and the
+  submission is queued in localStorage and retried on their next visit.
+- An address HubSpot refuses (`INVALID_EMAIL`, `BLOCKED_EMAIL`) keeps the gate shut.
+- The page address is sent as `pageUri`, so UTM tags on campaign links reach HubSpot.
+- Returning visitors skip the form. A first view of another mesh sends one more submission.
+- Other players see only the name. The email never enters the multiplayer path.
+- The gate runs in the browser: it is a prompt for interested people, not access control.
+  Automated browsers (the tests) skip it and send nothing.
 
-## Multiplayer
-
-Players on the hosted build see each other drive (cars pass through each other). Each browser
-simulates its own car and sends its pose; a Durable Object per room (`worker/src/room.js`)
-relays it. `src/net.js` draws the others ~150 ms in the past, interpolated between real poses.
-
-- Room = `?room=<name>` (default `lobby`) plus the mesh's timestamp folder, so two versions of
-  the mesh never share a room. `?mp=0` turns multiplayer off. It is off under plain
-  `server.py` (the rooms live on the Worker).
-- **Email label:** the page asks for an email and shows it above the car to everyone in the
-  room. It is unverified free text: capped at 64 characters, stripped of control characters,
-  drawn as canvas text (never HTML), kept in the browser's localStorage and the live socket
-  only — the server stores nothing. Blank is allowed. `?email=` presets it.
-- Any failure (room full, daily allowance used up, connection lost) falls back to
-  single-player without an error.
-
-## Cost controls
+## Capacity and cost
 
 **Keep the Cloudflare account on the Workers Free plan.** Free never bills: at a daily limit
-(100,000 Worker requests; Durable Objects 100,000 requests + 13,000 GB-s) requests fail until
-00:00 UTC. Workers Paid has no spending cap. GitHub Pages and the satellite imagery cost
-nothing here. The limits below stop one visitor using up the day's allowance:
+(100,000 Worker requests; Durable Objects 100,000 requests + 13,000 GB-s) requests fail
+until 00:00 UTC. Workers Paid has no spending cap. Pages, HubSpot forms and the satellite
+imagery cost nothing here. The one real exposure is data served by the DeepWalk tile
+service on edge-cache misses (`/stats` reports misses and bytes).
 
-| Control | Where |
-|---|---|
-| `MULTIPLAYER = "off"` switch, `MAX_PLAYERS` (8) per room | `worker/wrangler.toml` |
-| Only the Pages origin may use tiles or rooms | `ALLOWED_ORIGINS` |
-| Room names limited to `[a-z0-9-]{1,40}` | `worker/src/index.js` |
-| Per-IP rate limits: 1,500 tile requests/min, 40 room connections/min (approximate) | `[[ratelimits]]` |
-| Per-socket 15 messages/s; a flood is closed; fixed message size | `worker/src/room.js` |
-| Sockets silent for 5 min are dropped; empty rooms hibernate | `worker/src/room.js` |
-| Page sends 10 poses/s while moving, 1 per 2 s parked, none from a hidden tab | `src/net.js` |
+The site is sized for **100 new visitors a day** (`DAILY_USERS` in `worker/wrangler.toml`):
 
-Budget: about 1,800 billed requests per player-hour of driving, so ~55 player-hours a day;
-a fresh visitor is a few hundred tile requests, then their browser caches tiles for a day.
+- **Admission** (`worker/src/gate.js`): the 101st new visitor of the UTC day gets the
+  capacity page. A signed day-pass means a returning visitor takes no new place. If the
+  Worker is unreachable (the free plan's hard stop) the page shows the same capacity page.
+- **Tile budget** (`watchTileBudget`): tiles are the binding cost, one request each.
+  Measured on the Pinellas mesh: ~250 tiles to spawn, then ~1.5 per metre, so a 320 m route
+  is ~750 and all three routes ~1,200. Detail level, view distance and ancestor/sibling
+  loading each changed that by under 15% — it is set by how finely the mesh is tiled. Each
+  visitor gets `tileBudget` (800) network tiles a day at full detail and `tileHardStop`
+  (1,000) in total; then streaming stops and what is loaded stays drivable. Tiles from the
+  browser's cache (kept 30 days) are not counted. **At 100 visitors a day that is about one
+  route per visitor.** More per visitor means fewer visitors, or the paid plan.
+- **Limits against abuse:** only the Pages origin may call the Worker; per-IP rate limits
+  (tiles 1,200/min, rooms 40/min, forms 20/min; approximate); rooms hold 8 players, accept
+  15 messages/s per socket, drop sockets silent for 5 min, and hibernate when quiet;
+  `MULTIPLAYER = "off"` turns rooms off.
+- **Numbers:** `GET <worker>/stats?key=<STATS_KEY>&days=7` returns per-day admissions,
+  turn-aways (overall and per mesh) and tile cache hits/misses. No visitor data is stored.
 
-`node test/multi.mjs` (two browsers, one drives, the other must see it) and
-`node test/limits.mjs [worker url] [origin] [--idle=<s>]` (abuse checks) run against
-`npx wrangler dev` in `worker/` with a `.dev.vars` holding `TILESET_URL`, `ALLOWED_ORIGINS`
-(and `IDLE_SECONDS` for `--idle`), and a build made with
-`TILESET_URL=http://127.0.0.1:8787/tiles/tileset.json`.
+## Multiplayer (`src/net.js`, `worker/src/room.js`)
+
+Players on the same mesh and room see each other drive (cars pass through each other). Each
+browser simulates its own car and sends its pose; a Durable Object per room relays it.
+Peers are drawn ~150 ms in the past, interpolated between real poses. The room name is
+`<room>-<mesh id>-<mesh timestamp>`, so two meshes or two versions never share one.
+"Invite a colleague" makes a link to a fresh private room. Any failure (room full,
+allowance used up, connection lost) falls back to single-player.
+
+## Cars (`src/cars.js`)
+
+Six models from [Kenney's Car Kit](https://kenney.nl/assets/car-kit) (CC0; files unmodified
+in `static/cars/`, licence in `static/cars/LICENSE.txt`). At load time the body is repainted
+in a DeepWalk livery and the DeepWalk mark (`static/brand/mark.png`) is placed on the roof
+and doors. The visitor's car is navy `#13213C` with a white mark; other players get white,
+steel blue or pale grey. The choice is made on the start screen ("Change car" in the bar
+reopens it) and sent to other players with the name. Cars are cosmetic: the physics body
+(`src/vehicle.js`) is the same for all. Until a model loads, the built-in box car is shown.
+
+## Phones (`src/touch.js`)
+
+On a touch device the game shows on-screen steering, gas and brake, starts on autopilot with
+a "Take the wheel" button, uses coarser tile detail and a compact HUD.
 
 ## Satellite basemap
 
-Esri World Imagery under and around the mesh (`buildBasemap` in `src/main.js`): the tiles
-covering the mesh plus a 250 m margin are composited into one texture on one flat quad, set
-just below the road where the car spawns. Loaded by the browser straight from Esri, with the
-attribution shown at the bottom of the page. `?sat=0` turns it off. The quad is flat, so on
-hilly captures it will sit above or below the mesh away from the spawn point.
+Esri World Imagery under and around the mesh (`buildBasemap`): one flat quad, set just below
+the road where the car spawns, loaded by the browser straight from Esri with attribution on
+screen. On hilly captures it will sit above or below the mesh away from the spawn point.
 
-## Not done
+## How the driving works
 
-No collisions between players, no sound, no gameplay loop.
+- **Tiles** — `3d-tiles-renderer` streams the tileset; Draco and KTX2/Basis decoders are wired in.
+- **Coordinates** (`src/geo.js`) — the tiles group is moved into an east-north-up frame at
+  the mesh centre (`+X` east, `+Y` up, `-Z` north) to avoid float jitter at Earth scale.
+- **Car** (`src/vehicle.js`) — a raycast vehicle: one rigid body, four spring-damper
+  suspension rays, friction-circle tyres, 120 Hz substeps. Rays hit the tiles on screen, so
+  there is no separate collision mesh. Each tile gets a `three-mesh-bvh` tree (in a worker).
+- **Holes** — a wheel whose ray finds nothing keeps rolling at its last ground height.
+- **Spawning** — ground height is a vote across five rays; ground is required under the
+  whole car; the spawn walks up the route until it finds some.
+
+## Deploying
+
+```
+cd worker
+npx wrangler secret put TILESETS    # JSON {"<mesh id>": "<.../tileset.json URL with key>"}
+npx wrangler secret put PASS_KEY    # any long random string
+npx wrangler secret put STATS_KEY   # any long random string
+npx wrangler deploy
+```
+
+GitHub: Settings → Pages → Source = **GitHub Actions**; Actions variable `TILES_BASE` =
+`https://<worker>.workers.dev/tiles/`. Every push to `main` builds and publishes `static/`.
+`ALLOWED_ORIGINS` in `worker/wrangler.toml` must list the site's origin.
+
+## Tests
+
+All drive the installed Chrome headless. Local stack: `npx wrangler dev` in `worker/` with a
+`.dev.vars` (see the top of `test/gate.mjs`), a build made with
+`TILES_BASE=http://127.0.0.1:8787/tiles/`, and `python server.py`.
+
+```
+node test/smoke.mjs smoke        # spawn and drive (works against plain server.py too)
+node test/smoke.mjs auto 30 9    # one route on autopilot; survey 9 0,1,2 for several
+node test/multi.mjs              # two browsers: names, car models, positions, leaving
+node test/limits.mjs [worker] [origin] [--idle=<s>]   # abuse checks on rooms and tiles
+node test/gate.mjs               # the funnel: form, HubSpot (stand-in), admission, capacity,
+                                 # ad-blocker fallback, tile budget, phone mode
+node test/thumbs.mjs             # regenerate mesh thumbnails, car pictures and og.jpg
+```
+
+`smoke`, `multi` and `limits` also run against the live site (`GAME_URL=...`).

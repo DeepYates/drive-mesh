@@ -1,10 +1,13 @@
-# Tile proxy + multiplayer rooms for the hosted Drive Mesh game. Deploy from this folder:
+# Backend for the hosted Drive Mesh demo (tiles, rooms, admission gate, lead fallback).
+# Deploy from this folder:
 #
 #   npx wrangler login
-#   npx wrangler secret put TILESET_URL     # paste the full .../tileset.json URL (has the API key)
+#   npx wrangler secret put TILESETS    # JSON {"<mesh id>": "<.../tileset.json URL with key>"}
+#   npx wrangler secret put PASS_KEY    # any long random string (signs the day-pass)
+#   npx wrangler secret put STATS_KEY   # any long random string (key for /stats)
 #   npx wrangler deploy
 #
-# The deploy prints the Worker URL; the game's tileset is <that URL>/tiles/tileset.json.
+# The deploy prints the Worker URL; the site is built with TILES_BASE=<that URL>/tiles/.
 #
 # COST: keep this account on the Workers Free plan. Free never bills: at a daily limit
 # (100,000 requests; Durable Objects 100,000 requests + 13,000 GB-s) requests fail until
@@ -20,25 +23,41 @@ ALLOWED_ORIGINS = "https://deepyates.github.io"
 MULTIPLAYER = "on"
 # Players per room; one more gets "room full" and plays alone.
 MAX_PLAYERS = "8"
+# New visitors admitted per UTC day; the next one sees the "at capacity" page. 100 visitors
+# x up to 800 tile requests each stays inside the Free plan's 100,000 requests a day.
+DAILY_USERS = "100"
+# HubSpot form that /lead forwards to (public ids, not secrets). Empty = /lead answers 503.
+HUBSPOT_PORTAL = "46598388"
+HUBSPOT_FORM = ""
 
 # Multiplayer rooms (src/room.js). SQLite-backed: the only kind the Free plan allows.
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "Room"
 
+# Admission gate + daily counts (src/gate.js).
+[[durable_objects.bindings]]
+name = "GATE"
+class_name = "Gate"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Gate"]
+
 # Per-IP rate limits (approximate; counted per Cloudflare location). A cold start of the game
-# is a few hundred tile requests in the first half minute, so the tile limit sits well above that.
+# is ~350 tile requests in the first half minute, and an office of several players shares one
+# address, so the tile limit sits well above that.
 # The room limit allows for several players behind one office address.
 [[ratelimits]]
 name = "LIMIT_TILES"
 namespace_id = "1001"
 
   [ratelimits.simple]
-  limit = 1500
+  limit = 1200
   period = 60
 
 [[ratelimits]]
@@ -47,4 +66,13 @@ namespace_id = "1002"
 
   [ratelimits.simple]
   limit = 40
+  period = 60
+
+# /enter and /lead
+[[ratelimits]]
+name = "LIMIT_FORMS"
+namespace_id = "1003"
+
+  [ratelimits.simple]
+  limit = 20
   period = 60

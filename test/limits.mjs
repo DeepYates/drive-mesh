@@ -46,12 +46,13 @@ a.ws.send( pose() );
 await until( () => b.binary.length );
 check( b.binary[ 0 ]?.byteLength === 41 && new Uint8Array( b.binary[ 0 ] )[ 0 ] === 1, 'pose relayed with the sender id in front', `${b.binary[ 0 ]?.byteLength} bytes` );
 check( a.binary.length === 0, 'sender does not get its own pose back' );
-a.ws.send( JSON.stringify( { t: 'name', name: '  ev\u0007il‮@x.dev' + 'y'.repeat( 100 ) } ) );
+a.ws.send( JSON.stringify( { t: 'name', name: '  ev\u0007il‮@x.dev' + 'y'.repeat( 100 ), car: '../../etc' } ) );
 await until( () => b.text.some( m => m.t === 'name' ) );
 const nm = b.text.find( m => m.t === 'name' )?.name ?? '';
 check( nm.length === 64 && nm.startsWith( 'evil@x.dev' ), 'name is trimmed, stripped of control/bidi characters and capped at 64', JSON.stringify( nm.slice( 0, 14 ) ) );
+check( b.text.find( m => m.t === 'name' )?.car === '', 'a car id that is not a plain model name is dropped' );
 const c = open(); await until( () => c.hello );
-check( c.hello?.names?.[ 1 ] === nm, 'a later joiner is told existing names' );
+check( c.hello?.names?.[ 1 ]?.name === nm, 'a later joiner is told existing names' );
 
 // --- bad messages close the socket
 c.ws.send( new ArrayBuffer( 4096 ) ); await until( () => c.closed );

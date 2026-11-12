@@ -4,9 +4,9 @@
 // Protocol
 //   client -> server   binary, exactly POSE_BYTES: Float32 x10 (pos xyz, quat xyzw, speed, steer, braking)
 //   server -> client   binary, 1 + POSE_BYTES: sender id (Uint8) then the pose, unchanged
-//   client -> server   text JSON {t:'name', name}: the label to show above this player's car
-//   server -> client   text JSON: {t:'hello', id, peers:[id], names:{id:name}} on connect,
-//                      {t:'join', id}, {t:'leave', id}, {t:'name', id, name}, {t:'ok'} (liveness)
+//   client -> server   text JSON {t:'name', name, car}: the label above this player's car and their car model
+//   server -> client   text JSON: {t:'hello', id, peers:[id], names:{id:{name, car}}} on connect,
+//                      {t:'join', id}, {t:'leave', id}, {t:'name', id, name, car}, {t:'ok'} (liveness)
 //   close codes        4000 room full · 4001 idle · 4002 flooding · 4003 bad message
 //
 // Everything here exists to protect the free plan's daily allowance (20 incoming messages
@@ -62,7 +62,7 @@ export class Room extends DurableObject {
 		this.ctx.acceptWebSocket( server );
 		server.serializeAttachment( { id, seen: Date.now() } );
 		server.send( JSON.stringify( { t: 'hello', id, peers: [ ...used ],
-			names: Object.fromEntries( others.filter( a => a.name ).map( a => [ a.id, a.name ] ) ) } ) );
+			names: Object.fromEntries( others.filter( a => a.name || a.car ).map( a => [ a.id, { name: a.name ?? '', car: a.car ?? '' } ] ) ) } ) );
 		this.broadcast( JSON.stringify( { t: 'join', id } ), server );
 		if ( await this.ctx.storage.getAlarm() === null ) await this.ctx.storage.setAlarm( Date.now() + this.sweepMs );
 		return new Response( null, { status: 101, webSocket: client } );
@@ -100,8 +100,9 @@ export class Room extends DurableObject {
 			try { m = JSON.parse( message ); } catch { return this.drop( ws, 4003, 'bad message' ); }
 			if ( m?.t !== 'name' || typeof m.name !== 'string' ) return this.drop( ws, 4003, 'bad message' );
 			const name = cleanName( m.name );
-			ws.serializeAttachment( { ...state, name } );
-			this.broadcast( JSON.stringify( { t: 'name', id: state.id, name } ), ws );
+			const car = typeof m.car === 'string' && /^[a-z0-9-]{1,24}$/.test( m.car ) ? m.car : '';    // a model id, nothing else
+			ws.serializeAttachment( { ...state, name, car } );
+			this.broadcast( JSON.stringify( { t: 'name', id: state.id, name, car } ), ws );
 			return;
 
 		}

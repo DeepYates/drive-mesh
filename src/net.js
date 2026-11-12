@@ -23,8 +23,8 @@ export class Net {
 		this.status = url ? 'idle' : 'off';      // off | idle | connecting | online | full
 		this.id = 0;
 		this.peers = new Map();                  // id -> [ { t, pos, quat, speed, steer, braking } ] oldest first
-		this.names = new Map();                  // id -> label typed by that player (unverified text)
-		this.name = '';
+		this.names = new Map();                  // id -> { name, car } sent by that player (unverified)
+		this.name = ''; this.car = '';
 		this.ws = null;
 		this.fails = 0;
 		this.retryAt = 0;
@@ -87,12 +87,12 @@ export class Net {
 			if ( m.t === 'hello' ) {
 
 				this.id = m.id; this.status = 'online'; this.fails = 0; this.sentAt = 0;
-				this.names = new Map( Object.entries( m.names ?? {} ).map( ( [ id, name ] ) => [ Number( id ), String( name ) ] ) );
+				this.names = new Map( Object.entries( m.names ?? {} ).map( ( [ id, v ] ) => [ Number( id ), { name: String( v?.name ?? '' ), car: String( v?.car ?? '' ) } ] ) );
 				this.sendName();
 
 			}
 
-			if ( m.t === 'name' ) this.names.set( m.id, String( m.name ) );
+			if ( m.t === 'name' ) this.names.set( m.id, { name: String( m.name ?? '' ), car: String( m.car ?? '' ) } );
 			if ( m.t === 'leave' ) { this.peers.delete( m.id ); this.names.delete( m.id ); }
 			return;
 
@@ -110,17 +110,17 @@ export class Net {
 
 	}
 
-	/** The label shown above this player's car to everyone in the room ('' for none). */
-	setName( name ) {
+	/** The label shown above this player's car ('' for none) and the car model they chose. */
+	setName( name, car = this.car ) {
 
-		this.name = name;
+		this.name = name; this.car = car;
 		this.sendName();
 
 	}
 
 	sendName() {
 
-		if ( this.name && this.status === 'online' && this.ws?.readyState === 1 ) this.ws.send( JSON.stringify( { t: 'name', name: this.name } ) );
+		if ( ( this.name || this.car ) && this.status === 'online' && this.ws?.readyState === 1 ) this.ws.send( JSON.stringify( { t: 'name', name: this.name, car: this.car } ) );
 
 	}
 
@@ -171,10 +171,10 @@ export class Net {
 			let i = snaps.length - 1;
 			while ( i > 0 && snaps[ i - 1 ].t > at ) i --;
 			const b = snaps[ i ], a = snaps[ i - 1 ];
-			const name = this.names.get( id ) ?? '';
-			if ( ! a || at >= b.t ) { out.push( { id, name, ...( at >= b.t ? newest : b ) } ); continue; }
+			const { name = '', car = '' } = this.names.get( id ) ?? {};
+			if ( ! a || at >= b.t ) { out.push( { id, name, car, ...( at >= b.t ? newest : b ) } ); continue; }
 			const k = Math.min( 1, Math.max( 0, ( at - a.t ) / ( b.t - a.t || 1 ) ) );
-			out.push( { id, name, pos: a.pos.clone().lerp( b.pos, k ), quat: a.quat.clone().slerp( b.quat, k ),
+			out.push( { id, name, car, pos: a.pos.clone().lerp( b.pos, k ), quat: a.quat.clone().slerp( b.quat, k ),
 				speed: a.speed + ( b.speed - a.speed ) * k, steer: a.steer + ( b.steer - a.steer ) * k, braking: b.braking } );
 
 		}

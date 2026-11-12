@@ -1,0 +1,28 @@
+{
+  "site": {
+    "title": "Drive the mesh",
+    "pitch": "Street-level 3D meshes you can drive through in your browser. Pick a mesh, take the wheel, and judge the quality for yourself.",
+    "ctaLabel": "Talk to DeepWalk",
+    "ctaUrl": "https://www.deepwalk.com/",
+    "privacyUrl": "",
+    "hubspot": {
+      "portalId": "46598388",
+      "formGuid": "",
+      "consentText": ""
+    },
+    "errorTarget": 10,
+    "tileBudget": 800,
+    "tileHardStop": 1000
+  },
+  "meshes": [
+    {
+      "id": "pinellas",
+      "title": "Arterial road corridor",
+      "provider": "DeepWalk Drive",
+      "place": "Pinellas County, Florida",
+      "blurb": "About 500 m of road, sidewalk and street furniture.",
+      "thumb": "thumbs/pinellas.jpg",
+      "sceneUrl": ""
+    }
+  ]
+}

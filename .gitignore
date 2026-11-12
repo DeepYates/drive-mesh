@@ -9,7 +9,10 @@ static/libs/
 # perf-comparison baseline build, not part of the site
 static/base/
 test/out/
-# contains the DeepWalk API key
+# contain the DeepWalk API key
 tileset_url.local.txt
+tilesets.local.json
+# the /stats key, kept locally for the site owner
+stats_key.local.txt
 worker/.dev.vars
 worker/.wrangler/
