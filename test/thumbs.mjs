@@ -9,7 +9,11 @@ import { fileURLToPath } from 'node:url';
 const root = join( dirname( fileURLToPath( import.meta.url ) ), '..', 'static' );
 const BASE = process.env.GAME_URL || 'http://127.0.0.1:8600/';
 const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const { meshes, site } = JSON.parse( readFileSync( join( root, 'meshes.json' ), 'utf8' ) );
+const { meshes: all, site } = JSON.parse( readFileSync( join( root, 'meshes.json' ), 'utf8' ) );
+// `node test/thumbs.mjs <mesh id>`: only that mesh's routes and thumbnail (the car pictures and og.jpg are left alone)
+const only = process.argv[ 2 ];
+const meshes = only ? all.filter( m => m.id === only ) : all;
+if ( only && ! meshes.length ) { console.error( `no mesh "${only}" in meshes.json` ); process.exit( 1 ); }
 const sleep = ms => new Promise( r => setTimeout( r, ms ) );
 mkdirSync( join( root, 'thumbs' ), { recursive: true } );
 
@@ -66,7 +70,7 @@ for ( const mesh of meshes ) {
 }
 
 // the car picker's pictures: studio shots rendered by the game itself (window.__game.carShot)
-{
+if ( ! only ) {
 
 	const page = await browser.newPage();
 	await page.goto( `${BASE}?mesh=${meshes[ 0 ].id}&mp=0&sat=0`, { waitUntil: 'load' } );
@@ -84,5 +88,5 @@ for ( const mesh of meshes ) {
 }
 
 for ( const mesh of meshes.filter( m => m.thumb ) ) await shoot( mesh, 960, 540, `thumbs/${mesh.id}.jpg` );
-await shoot( meshes[ 0 ], 1200, 630, 'og.jpg', { brand: 'DEEPWALK', title: site.title || 'Drive the mesh' } );
+if ( ! only ) await shoot( meshes[ 0 ], 1200, 630, 'og.jpg', { brand: 'DEEPWALK', title: site.title || 'Drive the mesh' } );
 await browser.close();

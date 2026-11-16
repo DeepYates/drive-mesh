@@ -32,6 +32,16 @@
       }
     },
     {
+      "id": "evansville",
+      "title": "Signalized highway intersection",
+      "provider": "DeepWalk Drive",
+      "place": "Evansville, Indiana",
+      "blurb": "About 500 m of street through a signalized crossing of US 41.",
+      "thumb": "thumbs/evansville.jpg",
+      "routeCache": true,
+      "unlisted": true
+    },
+    {
       "id": "johnston",
       "title": "Suburban street network",
       "provider": "DeepWalk Drive",

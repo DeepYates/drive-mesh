@@ -41,13 +41,20 @@ meshes[]: id, title, provider, place, blurb, thumb?, routes?, routeCache?, scene
 ```
 
 **Add a mesh:** add an entry to `meshes[]`, add its tileset URL under the same id to the
-Worker's `TILESETS` secret (and `tilesets.local.json`), run `node test/thumbs.mjs` for its
-thumbnail, push. With two or more listed meshes the start screen shows the gallery.
+Worker's `TILESETS` secret (and `tilesets.local.json`), run `node test/thumbs.mjs <id>` for its
+thumbnail and route cache (with no id it redoes every mesh, the car pictures and `og.jpg`),
+push. With two or more listed meshes the start screen shows the gallery.
+
+Only `pinellas` is listed today, so the start screen shows no gallery.
 
 **Unlisted meshes:** `"unlisted": true` keeps a mesh out of the gallery and out of the
 default; it loads only from a link that names it (`?mesh=<id>`), and needs no thumbnail.
 This keeps it off the site, not secret: the id is in this public file. The Iowa mesh
 (`johnston`, 2.7 km x 2 km, 68 routes in `static/routes/johnston.geojson`) is unlisted.
+So is `evansville` (Covert Ave across US 41, Evansville IN, 511 m x 257 m). It has a
+thumbnail, so listing it is only a matter of removing the flag. Its route cache is trimmed
+by hand to the two runs of 60 m or more; the survey also returns eight 25-40 m stubs where
+cross streets leave the capture strip.
 
 **View in ArcGIS Online:** every mesh gets this button. It opens ArcGIS Online's Scene
 Viewer with the mesh as a 3D Tiles layer:
