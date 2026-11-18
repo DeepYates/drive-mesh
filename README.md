@@ -55,6 +55,10 @@ So is `evansville` (Covert Ave across US 41, Evansville IN, 511 m x 257 m). It h
 thumbnail, so listing it is only a matter of removing the flag. Its route cache is trimmed
 by hand to the two runs of 60 m or more; the survey also returns eight 25-40 m stubs where
 cross streets leave the capture strip.
+So is `peoria` (a north-south city street in Peoria IL, 1.9 km x 400 m, added 2026-11-18). Its
+route cache is trimmed the same way: three runs of 60 m or more (1,120 m, 470 m, 95 m) kept,
+seven 40-55 m side-street stubs dropped. Its thumbnail was taken further along the main run
+than `test/thumbs.mjs` goes, because the car tips against a parked car at the 7 s mark.
 
 **View in ArcGIS Online:** every mesh gets this button. It opens ArcGIS Online's Scene
 Viewer with the mesh as a 3D Tiles layer:

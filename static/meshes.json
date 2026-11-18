@@ -49,6 +49,16 @@
       "blurb": "About 2.7 km by 2 km of streets, with 68 driven routes.",
       "routes": true,
       "unlisted": true
+    },
+    {
+      "id": "peoria",
+      "title": "City street corridor",
+      "provider": "DeepWalk Drive",
+      "place": "Peoria, Illinois",
+      "blurb": "About 1.9 km of street, sidewalk and street furniture.",
+      "thumb": "thumbs/peoria.jpg",
+      "routeCache": true,
+      "unlisted": true
     }
   ]
 }
