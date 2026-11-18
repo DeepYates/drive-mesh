@@ -59,6 +59,16 @@
       "thumb": "thumbs/peoria.jpg",
       "routeCache": true,
       "unlisted": true
+    },
+    {
+      "id": "grandrapids",
+      "title": "Residential street network",
+      "provider": "DeepWalk Drive",
+      "place": "Grand Rapids, Michigan",
+      "blurb": "About 2.8 km by 1.8 km of residential streets.",
+      "thumb": "thumbs/grandrapids.jpg",
+      "routeCache": true,
+      "unlisted": true
     }
   ]
 }

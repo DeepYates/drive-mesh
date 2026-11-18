@@ -59,6 +59,10 @@ So is `peoria` (a north-south city street in Peoria IL, 1.9 km x 400 m, added 20
 route cache is trimmed the same way: three runs of 60 m or more (1,120 m, 470 m, 95 m) kept,
 seven 40-55 m side-street stubs dropped. Its thumbnail was taken further along the main run
 than `test/thumbs.mjs` goes, because the car tips against a parked car at the 7 s mark.
+So is `grandrapids` (a residential street network on the east side of Grand Rapids MI,
+2.8 km x 1.8 km, added 2026-11-18). Its route cache holds the 10 runs the survey returned
+(2.3 km in total, none under 60 m), which is only part of a network this size. Driving all
+of it needs more than one visitor's tile budget.
 
 **View in ArcGIS Online:** every mesh gets this button. It opens ArcGIS Online's Scene
 Viewer with the mesh as a 3D Tiles layer:
