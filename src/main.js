@@ -1374,6 +1374,9 @@ function requestSpawn( idx, along ) {
 
 }
 
+// the first-open hold in trySpawn: on unless `?sharp=0`; quiet time that counts as "done"; and the longest it may take
+const FIRST_VIEW_HOLD = params.get( 'sharp' ) !== '0', FIRST_VIEW_QUIET_MS = 600, FIRST_VIEW_MAX_MS = 20000;
+
 function trySpawn() {
 
 	const s = spawnPending;
@@ -1431,6 +1434,27 @@ function trySpawn() {
 	}
 
 	void waited;
+
+	// First open: hold the loading screen until the opening view is as sharp as it will get.
+	// The probe above looks straight down at the spawn point, which streams the road under the
+	// car but not the street ahead, so the first seconds of driving used to refine in view.
+	// Put the camera where the chase camera starts, keep streaming, and let go only once
+	// nothing in that view is still downloading or parsing (quiet for FIRST_VIEW_QUIET_MS).
+	// FIRST_VIEW_MAX_MS bounds the wait on a slow connection or a tile that never arrives.
+	// Later respawns (R, next route) keep the fast start. `?sharp=0` turns the hold off.
+	if ( firstDrive && FIRST_VIEW_HOLD ) {
+
+		const t = performance.now();
+		if ( s.viewSince === undefined ) { s.viewSince = t; s.viewQuiet = 0; }
+		const cy = hit.point.y + CAR.wheelRadius + CAR.restLength + 0.3;      // where car.reset puts the car, below
+		camera.position.set( s.x - fx * 7.5, cy + 2.8, s.z - fz * 7.5 );       // where the chase camera settles (updateCamera)
+		camera.lookAt( s.x + fx * 3, cy + 0.8, s.z + fz * 3 );                 // what updateCamera looks at
+		if ( ! settled ) s.viewQuiet = 0; else if ( ! s.viewQuiet ) s.viewQuiet = t;
+		const sharp = settled && t - s.viewQuiet >= FIRST_VIEW_QUIET_MS;
+		if ( ! sharp && t - s.viewSince < FIRST_VIEW_MAX_MS ) return;
+		stats.firstView = { waitMs: Math.round( t - s.viewSince ), sharp, shown: tiles.stats.visible };
+
+	}
 
 	spawnLog.push( { t: Math.round( performance.now() ), x: s.x, z: s.z, y: hit.point.y, along: s.along,
 		closeFor: Math.round( closeFor ), settled, shown: tiles.stats.visible } );
@@ -1964,7 +1988,12 @@ function drawHud() {
 	const loading = t.downloading + t.parsing;
 	const overlayOn = state !== 'driving';
 	if ( overlayOn !== hudLast.overlayOn ) hudEls.overlay.classList.toggle( 'hidden', ! ( hudLast.overlayOn = overlayOn ) );
-	if ( overlayOn ) setText( 'overlayText', loading ? `Streaming mesh · ${loading} tiles in flight`
+	// the very first load hides the scene completely, so the mesh is first seen sharp (see the hold in trySpawn);
+	// a survey or a later respawn keeps the see-through veil
+	const solid = FIRST_VIEW_HOLD && firstDrive && state === 'loading';
+	if ( solid !== hudLast.solid ) hudEls.overlay.classList.toggle( 'solid', hudLast.solid = solid );
+	if ( overlayOn ) setText( 'overlayText', spawnPending?.viewSince !== undefined ? ( loading ? `Sharpening the view · ${loading} tiles to go` : 'Sharpening the view…' )
+		: loading ? `Streaming mesh · ${loading} tiles in flight`
 		: scan?.y ? `Surveying the mesh · ${Math.round( 100 * scan.next / scan.y.length )}%` : 'Finding the road…' );
 
 	let off = 0;
@@ -2108,6 +2137,12 @@ window.__game = {
 	get state() {
 
 		return state;
+
+	},
+	/** the first-open hold (trySpawn): how long it waited, whether the view was fully streamed, tiles shown */
+	get firstView() {
+
+		return stats.firstView ?? null;
 
 	},
 	get routes() {

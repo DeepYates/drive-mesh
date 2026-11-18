@@ -26,6 +26,12 @@ Keys: `W A S D` / arrows drive · `Space` handbrake · `R` reset onto the route 
 `?error=<px>` tile detail (default 10; lower = sharper), `?sat=0` no satellite, `?mp=0` no
 multiplayer, `?touch=1` phone controls, `?pick=1` reopen the start screen, `?bvh=0`.
 
+**First view.** On the first load the loading screen is solid and stays up until the opening
+chase view is fully streamed: nothing downloading or parsing for 0.6 s, capped at 20 s
+(`FIRST_VIEW_*` in `trySpawn`). Without it the car set off into a view that sharpened over
+the next few seconds. It costs roughly 5 to 10 s of extra loading; `?sharp=0` turns it off.
+Respawns (`R`, `N`) keep the fast start. `node test/firstview.mjs [mesh]` compares both.
+
 ## The site: `static/meshes.json`
 
 One file holds everything public about the site. No URLs with keys go in it.

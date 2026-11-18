@@ -46,6 +46,7 @@
     justify-content: center; font-size: 15px; letter-spacing: .04em; background: rgba(13, 17, 23, .42);
     pointer-events: none; transition: opacity .45s ease; }
   #overlay.hidden { opacity: 0; }
+  #overlay.solid { background: rgb(13, 17, 23); }   /* first load only: nothing shows until the opening view is sharp */
   #overlay::before { content: ""; width: 34px; height: 34px; border-radius: 50%;
     border: 3px solid rgba(255, 255, 255, .22); border-top-color: var(--gold); animation: spin .9s linear infinite; }
   #overlay.hidden::before, #overlay.failed::before { animation: none; }
